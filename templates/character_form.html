@@ -1,0 +1,351 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-3">
+
+  <!-- Header + learner info + photo -->
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h4 class="text-primary mb-0">
+      Learner's Character Progressive Report
+    </h4>
+    <div class="d-flex align-items-center gap-3">
+      <div class="text-end small">
+        <div>
+          <strong>
+            {{ student.first_name }} {{ student.middle_name or '' }} {{ student.last_name }}
+          </strong>
+        </div>
+        <div class="text-muted">
+          Reg No: {{ student.student_number or '-' }}
+        </div>
+        <div class="text-muted">
+          Class: {{ student.class_name or '-' }} {{ student.stream or '' }}
+        </div>
+        <div>
+          Term: <strong>{{ term }}</strong>
+          &nbsp; Year: <strong>{{ year }}</strong>
+        </div>
+      </div>
+      {% if student.photo %}
+      <div>
+        <img src="{{url_for('static', filename=student.photo.replace('static/','')) }}"
+             alt="Photo"
+             class="img-thumbnail"
+             style="width:80px;height:80px;object-fit:cover;">
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <hr class="mt-1 mb-3"/>
+
+  <!-- Term / year selector + navigation -->
+  <form method="get" class="row g-2 mb-3">
+    <input type="hidden" name="student_id" value="{{ student.id }}">
+    <div class="col-md-3">
+      <label class="form-label mb-0">Term</label>
+      <select name="term" class="form-select form-select-sm">
+        {% for t in ["Term 1", "Term 2", "Term 3"] %}
+          <option value="{{ t }}" {% if t == term %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label mb-0">Year</label>
+      <input type="number"
+             name="year"
+             value="{{ year }}"
+             class="form-control form-control-sm">
+    </div>
+    <div class="col-md-7 d-flex align-items-end justify-content-end gap-2">
+      <button class="btn btn-sm btn-primary">Load Period</button>
+
+      {% if prev_id %}
+      <a href="{{ url_for('character_form', student_id=prev_id, term=term, year=year) }}"
+         class="btn btn-sm btn-outline-secondary">
+        &laquo; Previous
+      </a>
+      {% endif %}
+
+      {% if next_id %}
+      <a href="{{ url_for('character_form', student_id=next_id, term=term, year=year) }}"
+         class="btn btn-sm btn-outline-secondary">
+        Next &raquo;
+      </a>
+      {% endif %}
+
+      <a href="{{ url_for('students') }}"
+         class="btn btn-sm btn-outline-secondary">
+        Back to Students
+      </a>
+
+      <a class="btn btn-sm btn-outline-secondary"
+         href="{{ url_for('reports_hub',
+                          class_name=request.args.get('class_name', student.class_name),
+                          term=request.args.get('term', term),
+                          year=request.args.get('year', year)) }}">
+        &larr; Reports
+      </a>
+    </div>
+  </form>
+
+  <!-- Key (full phrases only) -->
+  <div class="alert alert-info small mb-3">
+    <strong>KEY:</strong>
+    {% for opt in level_options %}
+      <span class="me-3">{{ loop.index }}. {{ opt }}</span>
+    {% endfor %}
+  </div>
+
+  <!-- MAIN FORM -->
+  <form method="post">
+    <input type="hidden" name="student_id" value="{{ student.id }}">
+    <input type="hidden" name="term" value="{{ term }}">
+    <input type="hidden" name="year" value="{{ year }}">
+
+    <div class="table-responsive">
+      <table class="table table-bordered table-sm align-middle">
+        <thead class="table-primary">
+          <tr class="text-center">
+            <th style="width: 18%">Area</th>
+            <th style="width: 18%">Section</th>
+            <th style="width: 24%">Skill</th>
+            <th>Description</th>
+            <th style="width: 18%">Level (select phrase)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set last_area = None %}
+          {% set last_section = None %}
+          {% for it in items %}
+            {% set lvl = scores_map.get(it.id) %}
+            {% if it.area != last_area %}
+              <tr class="table-secondary">
+                <td colspan="5"><strong>{{ it.area }}</strong></td>
+              </tr>
+              {% set last_section = None %}
+            {% endif %}
+            {% if it.section and it.section != last_section %}
+              <tr class="table-light">
+                <td></td>
+                <td colspan="4"><strong>{{ it.section }}</strong></td>
+              </tr>
+            {% endif %}
+            <tr>
+              <td></td>
+              <td></td>
+              <td><strong>{{ it.skill_label }}</strong></td>
+              <td>{{ it.description }}</td>
+              <td>
+                <select name="level_{{ it.id }}"
+                        class="form-select form-select-sm">
+                  <option value=""></option>
+                  {% for opt in level_options %}
+                    <option value="{{ opt }}" {% if lvl == opt %}selected{% endif %}>
+                      {{ opt }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </td>
+            </tr>
+            {% set last_area = it.area %}
+            {% set last_section = it.section %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Comments / meta section (bands + library) -->
+    <hr class="mt-4 mb-3">
+
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label mb-1">
+          Remarks &amp; Recommendations to the learner
+        </label>
+
+        <!-- Class Teacher band + library -->
+        <div class="row g-2 mb-1">
+          <div class="col-md-4">
+            <label class="form-label small mb-0">Class Manager's band</label>
+            <select id="ec_teacher_band" class="form-select form-select-sm">
+              <option value="">— choose band —</option>
+              <option value="excellent">Good / excellent performers</option>
+              <option value="moderate">Moderate performers</option>
+              <option value="poor">Needing improvement</option>
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small mb-0">Comment library (Class Teacher)</label>
+            <select id="ec_teacher_preset" class="form-select form-select-sm">
+              <option value="">— choose a comment —</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Headteacher band + library -->
+        <div class="row g-2 mb-1">
+          <div class="col-md-4">
+            <label class="form-label small mb-0">Headteacher band</label>
+            <select id="ec_head_band" class="form-select form-select-sm">
+              <option value="">— choose band —</option>
+              <option value="excellent">Good / excellent performers</option>
+              <option value="moderate">Moderate performers</option>
+              <option value="poor">Needing improvement</option>
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small mb-0">Comment library (Headteacher)</label>
+            <select id="ec_head_preset" class="form-select form-select-sm">
+              <option value="">— choose a comment —</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Multi-line combined text (parsed into class/head comments in route) -->
+        <textarea name="overall_custom"
+                  id="overall_custom"
+                  rows="3"
+                  class="form-control form-control-sm"
+                  placeholder="Combined comment for this learner (Class Manager / Headteacher).">
+{% if meta.class_teacher_comment or meta.head_teacher_comment %}
+Class Manager: {{ meta.class_teacher_comment or '' }}
+Headteacher: {{ meta.head_teacher_comment or '' }}
+{% endif %}</textarea>
+        <div class="form-text">
+          Selecting from the library fills this box (one line per role).
+          You can still edit it manually. The route splits Class Manager / Headteacher lines.
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label mb-1">Special Communication</label>
+        <textarea name="special_communication"
+                  rows="3"
+                  class="form-control form-control-sm"
+                  placeholder="">{{ meta.special_communication or '' }}</textarea>
+      </div>
+    </div>
+
+    <div class="row g-3 mt-2">
+      <div class="col-md-3">
+        <label class="form-label mb-1">Next term begins on</label>
+        <input type="date"
+               name="next_term_begin"
+               class="form-control form-control-sm"
+               value="{{ (meta.next_term_begin or '')[:10] }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label mb-1">Will end on</label>
+        <input type="date"
+               name="next_term_end"
+               class="form-control form-control-sm"
+               value="{{ (meta.next_term_end or '')[:10] }}">
+      </div>
+      <!--<div class="col-md-3">
+        <label class="form-label mb-1">School fees</label>
+        <input type="text"
+               name="school_fees"
+               class="form-control form-control-sm"
+               value="{{ meta.school_fees or '' }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label mb-1">School fees + daycare</label>
+        <input type="text"
+               name="school_fees_daycare"
+               class="form-control form-control-sm"
+               value="{{ meta.school_fees_daycare or '' }}">
+      </div>
+    </div>-->
+
+    <!-- Bottom navigation + actions -->
+    <div class="mt-3 d-flex justify-content-between">
+      <a href="{{ url_for('students') }}"
+         class="btn btn-outline-secondary btn-sm">
+        &larr; Back
+      </a>
+      <div class="d-flex gap-2">
+        {% if prev_id %}
+        <a href="{{ url_for('character_form', student_id=prev_id, term=term, year=year) }}"
+           class="btn btn-outline-secondary btn-sm">
+          &laquo; Previous
+        </a>
+        {% endif %}
+        {% if next_id %}
+        <a href="{{ url_for('character_form', student_id=next_id, term=term, year=year) }}"
+           class="btn btn-outline-secondary btn-sm">
+          Next &raquo;
+        </a>
+        {% endif %}
+        <a href="{{ url_for('character_pdf',
+                            student_id=student.id,
+                            term=term,
+                            year=year) }}"
+           class="btn btn-outline-success btn-sm"
+           target="_blank">
+          Download Character PDF
+        </a>
+        <button type="submit" class="btn btn-primary btn-sm">
+          Save Character Assessment
+        </button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  const TEACHER_LIB = {{ teacher_library|tojson }};
+  const HEAD_LIB = {{ head_library|tojson }};
+  const firstName = {{ student.first_name|tojson }};
+  const overallBox = document.getElementById("overall_custom");
+  if (!overallBox) return;
+
+  function setupBandControls(bandId, presetId, libraryGroup, roleLabel) {
+    const bandSel = document.getElementById(bandId);
+    const presetSel = document.getElementById(presetId);
+    if (!bandSel || !presetSel) return;
+
+    function refillPresets() {
+      const band = bandSel.value;
+      presetSel.innerHTML = '<option value="">— choose a comment —</option>';
+      if (!band || !libraryGroup[band]) return;
+      libraryGroup[band].forEach(function (txt) {
+        const opt = document.createElement("option");
+        opt.value = txt;
+        opt.textContent = txt;
+        presetSel.appendChild(opt);
+      });
+    }
+
+    bandSel.addEventListener("change", refillPresets);
+
+    presetSel.addEventListener("change", function () {
+      let txt = presetSel.value || "";
+      if (!txt) return;
+      // personalise
+      if (txt.indexOf("{name}") !== -1) {
+        txt = txt.replaceAll("{name}", firstName);
+      } else {
+        txt = firstName + " " + txt;
+      }
+      // multi-line combined comment: one line per role
+      let lines = (overallBox.value || "")
+        .split(/\n+/)
+        .map(function (l) { return l.trim(); })
+        .filter(function (l) { return l.length > 0; });
+
+      const prefix = roleLabel + ": ";
+      lines = lines.filter(function (l) {
+        return !l.startsWith(prefix);
+      });
+      lines.push(prefix + txt);
+      overallBox.value = lines.join("\n");
+    });
+  }
+
+  setupBandControls("ec_teacher_band", "ec_teacher_preset", TEACHER_LIB, "Class Teacher");
+  setupBandControls("ec_head_band", "ec_head_preset", HEAD_LIB, "Headteacher");
+})();
+</script>
+{% endblock %}

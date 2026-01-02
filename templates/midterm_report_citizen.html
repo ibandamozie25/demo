@@ -1,0 +1,340 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+
+  <!-- Top bar: title + navigation -->
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="text-primary mb-0">Mid Term Report</h4>
+    <div class="btn-group">
+      <!-- Exit back to reports_hub for this class / term / year -->
+      <a class="btn btn-outline-danger btn-sm"
+         href="{{ url_for('reports_hub',
+                          class_name=student.class_name,
+                          term=term, year=year) }}">
+        Exit
+      </a>
+      {% if prev_id %}
+      <a class="btn btn-primary btn-sm"
+         href="{{ url_for('midterm_report',
+                          student_id=prev_id,
+                          term=term, year=year) }}">
+        « Previous learner
+      </a>
+      {% endif %}
+      {% if next_id %}
+      <a class="btn btn-outline-dark btn-sm"
+         href="{{ url_for('midterm_report',
+                          student_id=next_id,
+                          term=term, year=year) }}">
+        Next learner »
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Header card: school + learner info + photo -->
+  <div class="card mb-3 shadow-sm">
+    <div class="card-body">
+      <div class="row">
+        <div class="col-md-8">
+          <h5 class="mb-0">{{ school.name }}</h5>
+          <small class="text-muted">
+            {{ school.tagline }} &middot; {{ school.motto }}
+          </small>
+          <div class="mt-2 small">
+            <div><strong>Tel:</strong> {{ school.phones }}</div>
+            <div><strong>P.O. Box:</strong> {{ school.pobox }}</div>
+          </div>
+
+          <hr class="my-2">
+
+          <div class="row small">
+            <div class="col-sm-6">
+              <div>
+                <strong>Learner's Name:</strong>
+                {{ student.first_name }}
+                {% if student.middle_name %} {{ student.middle_name }}{% endif %}
+                {{ student.last_name }}
+              </div>
+              <div><strong>Student No.:</strong> {{ student.student_number }}</div>
+            </div>
+            <div class="col-sm-6">
+              <div>
+                <strong>Class / Stream:</strong>
+                {{ student.class_name }} {{ student.stream or "" }}
+              </div>
+              <div><strong>Term / Year:</strong> {{ term }} / {{ year }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-md-4 text-center">
+      {% if student.photo %}
+      <div>
+        <img src="{{url_for('static', filename=student.photo.lstrip('/')) }}"
+             alt="Photo"
+             class="img-thumbnail"
+             style="width:80px;height:80px;object-fit:cover;">
+      </div>
+      {% endif %}
+          <div class="small text-muted mt-1">Mid Term Report</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary line -->
+  <div class="row mb-2 small fw-semibold">
+    <div class="col-sm-4">
+      Average (Mid):
+      {% if avg_mid_overall is not none %}
+        {{ "%.1f"|format(avg_mid_overall) }}
+      {% else %}
+        &mdash;
+      {% endif %}
+    </div>
+    <div class="col-sm-4 text-center">
+      Aggregate:
+      {% if aggregate is not none %}
+        {{ aggregate }}
+      {% else %}
+        &mdash;
+      {% endif %}
+    </div>
+    <div class="col-sm-4 text-end">
+      Division: {{ division or "NG" }}
+    </div>
+  </div>
+
+  <!-- Midterm table -->
+  <div class="card mb-3">
+    <div class="card-header py-2">
+      <strong>Mid Term Performance</strong>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-bordered table-sm mb-0 align-middle">
+          <thead class="table-light">
+            <tr class="text-center">
+              <th>Subject</th>
+              {% if show_oth %}<th style="width: 70px;">OTH</th>{% endif %}
+              {% if show_bot %}<th style="width: 70px;">BOT</th>{% endif %}
+              {% if show_mid %}<th style="width: 70px;">MID</th>{% endif %}
+              <th style="width: 90px;">Mid Term (%)</th>
+              <th style="width: 70px;">Grade</th>
+              <th>Comment</th>
+              <th style="width: 80px;">Initials</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+            <tr>
+              <td>
+                {{ r.name }}
+                {% if r.code %}
+                  <span class="text-muted small">({{ r.code }})</span>
+                {% endif %}
+              </td>
+              {% if show_oth %}
+              <td class="text-center">
+                {% if r.OTH is not none %}{{ r.OTH|round(0, 'floor')|int }}{% endif %}
+              </td>
+              {% endif %}
+              {% if show_bot %}
+              <td class="text-center">
+                {% if r.BOT is not none %}{{ r.BOT|round(0, 'floor')|int }}{% endif %}
+              </td>
+              {% endif %}
+              {% if show_mid %}
+              <td class="text-center">
+                {% if r.MID is not none %}{{ r.MID|round(0, 'floor')|int }}{% endif %}
+              </td>
+              {% endif %}
+              <td class="text-center">
+                {% if r.AVG is not none %}{{ "%.1f"|format(r.AVG) }}{% endif %}
+              </td>
+              <td class="text-center">{{ r.grade or "" }}</td>
+              <td class="small">{{ r.comment or "" }}</td>
+              <td class="text-center">{{ r.initials or "" }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="fw-semibold">
+              <td>TOTAL</td>
+              {% if show_oth %}<td></td>{% endif %}
+              {% if show_bot %}<td></td>{% endif %}
+              {% if show_mid %}<td></td>{% endif %}
+              <td class="text-center">
+                {% if total_mid_sum is not none %}{{ "%.1f"|format(total_mid_sum) }}{% endif %}
+              </td>
+              <td></td>
+              <td colspan="2"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Overall comments form (edit + Save / Save & Next) -->
+  <div class="card mb-4">
+    <div class="card-header py-2">
+      <strong>Overall Remarks &amp; Special Communication</strong>
+    </div>
+    <div class="card-body small">
+      <form method="post"
+            action="{{ url_for('save_midterm_comments', student_id=student.id) }}">
+
+    <!-- keep context so the route can redirect correctly -->
+        <input type="hidden" name="term" value="{{ term }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="next_id" value="{{ next_id or '' }}">
+
+        <!-- Class Manager band + library -->
+        <div class="row g-2 mb-2">
+          <div class="col-md-3">
+            <label class="form-label small">Class Manager band</label>
+            <select id="mt_teacher_band" class="form-select form-select-sm">
+              <option value="">— choose band —</option>
+              <option value="excellent">Good / excellent performers</option>
+              <option value="moderate">Moderate performers</option>
+              <option value="poor">Needing improvement</option>
+            </select>
+          </div>
+          <div class="col-md-9">
+            <label class="form-label small">Comment library (from band)</label>
+            <select id="mt_teacher_preset" class="form-select form-select-sm">
+              <option value="">— choose a comment —</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label fw-semibold">Class Manager’s Remarks</label>
+          <textarea name="teacher_comment"
+                    id="mt_teacher_comment"
+                    class="form-control form-control-sm"
+                    rows="2">{{ comments.teacher_comment or "" }}</textarea>
+        </div>
+
+        <!-- Headteacher band + library -->
+        <div class="row g-2 mb-2">
+          <div class="col-md-3">
+            <label class="form-label small">Head Teacher band</label>
+            <select id="mt_head_band" class="form-select form-select-sm">
+              <option value="">— choose band —</option>
+              <option value="excellent">Good / excellent performers</option>
+              <option value="moderate">Moderate performers</option>
+              <option value="poor">Needing improvement</option>
+            </select>
+          </div>
+          <div class="col-md-9">
+            <label class="form-label small">Comment library (from band)</label>
+            <select id="mt_head_preset" class="form-select form-select-sm">
+              <option value="">— choose a comment —</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label fw-semibold">Head Teacher’s Remarks</label>
+          <textarea name="head_comment"
+                    id="mt_head_comment"
+                    class="form-control form-control-sm"
+                    rows="2">{{ comments.head_comment or "" }}</textarea>
+        </div>
+
+        <!-- Special communication (unchanged) -->
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Special Communication</label>
+          <textarea name="special_communication"
+                    class="form-control form-control-sm"
+                    rows="2">{{ comments.special_communication or "" }}</textarea>
+        </div>
+
+
+        <div class="d-flex justify-content-end gap-2">
+          <!-- Save only -->
+          <button type="submit"
+                  name="action" value="save_only"
+                  class="btn btn-primary btn-sm">
+            Save comments
+          </button>
+
+          <!-- Save & Next (only if a next learner exists) -->
+          {% if next_id %}
+          <button type="submit"
+                  name="action" value="save_next"
+                  class="btn btn-success btn-sm">
+            Save &amp; Next
+          </button>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Grading legend -->
+  {% if grading %}
+  <div class="card mb-4">
+    <div class="card-header py-2">
+      <strong>Grading Scale</strong>
+    </div>
+    <div class="card-body small">
+      {% for g in grading %}
+        {% if g.lower_limit is not none and g.upper_limit is not none and g.grade %}
+          <span class="me-3">
+            {{ g.lower_limit|int }}–{{ g.upper_limit|int }}: {{ g.grade }}
+          </span>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+<script>
+(function () {
+  const TEACHER_LIB = {{ teacher_library|tojson }};
+  const HEAD_LIB = {{ head_library|tojson }};
+  const firstName = {{ student.first_name|tojson }};
+
+  function setupBandControls(bandId, presetId, textareaId, libraryGroup) {
+    const bandSel = document.getElementById(bandId);
+    const presetSel = document.getElementById(presetId);
+    const textarea = document.getElementById(textareaId);
+    if (!bandSel || !presetSel || !textarea) return;
+
+    function refillPresets() {
+      const band = bandSel.value;
+      presetSel.innerHTML = '<option value="">— choose a comment —</option>';
+      if (!band || !libraryGroup[band]) return;
+      libraryGroup[band].forEach(function (txt, idx) {
+        const opt = document.createElement('option');
+        opt.value = txt;
+        opt.textContent = txt;
+        presetSel.appendChild(opt);
+      });
+    }
+
+    bandSel.addEventListener('change', refillPresets);
+
+    presetSel.addEventListener('change', function () {
+      let txt = presetSel.value || '';
+      if (!txt) return;
+      // If template contains {name}, replace it. Otherwise prefix first name.
+      if (txt.indexOf('{name}') !== -1) {
+        txt = txt.replaceAll('{name}', firstName);
+      } else {
+        txt = firstName + ' ' + txt;
+      }
+      textarea.value = txt;
+    });
+  }
+
+  setupBandControls('mt_teacher_band', 'mt_teacher_preset', 'mt_teacher_comment', TEACHER_LIB);
+  setupBandControls('mt_head_band', 'mt_head_preset', 'mt_head_comment', HEAD_LIB);
+})();
+</script>

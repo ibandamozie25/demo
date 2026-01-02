@@ -1,0 +1,106 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h4 class="text-primary mb-3">Class Timetables</h4>
+
+  {% if role in ["admin", "dos", "headteacher", "deputyheadteacher"] %}
+  <div class="card mb-4">
+    <div class="card-header">Upload / Update Timetable</div>
+    <div class="card-body">
+      <form method="post" enctype="multipart/form-data" class="row g-2">
+		<div class="col-md-4">
+		  <label class="form-label">Class</label>
+		  <select name="class_name" class="form-select">
+			<option value="">All classes</option>
+			{% for c in classes %}
+			  <option value="{{ c }}">{{ c }}</option>
+			{% endfor %}
+		  </select>
+		</div>
+
+		<div class="col-md-4">
+		  <label class="form-label">Stream</label>
+		  <select name="stream" class="form-select">
+			<option value="">All streams</option>
+			{% for s in streams %}
+			  <option value="{{ s }}">{{ s }}</option>
+			{% endfor %}
+		  </select>
+		</div>
+        <div class="col-md-2">
+          <label class="form-label">Term</label>
+          <select name="term" class="form-select">
+            <option>Term 1</option>
+            <option>Term 2</option>
+            <option>Term 3</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Year</label>
+          <input type="number" name="year" class="form-control"
+                 value="{{ current_year or 2025 }}">
+        </div>
+        <div class="col-md-6 mt-2">
+          <label class="form-label">Title / Description</label>
+          <input type="text" name="title" class="form-control"
+                 placeholder="e.g. P5 Red Timetable Term 1 2026">
+        </div>
+        <div class="col-md-4 mt-2">
+          <label class="form-label">Timetable file (PDF / image)</label>
+          <input type="file" name="timetable_file" class="form-control" required>
+        </div>
+        <div class="col-md-2 mt-4 d-flex align-items-end">
+          <button class="btn btn-primary w-100">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <table class="table table-sm table-striped">
+	<thead>
+	  <tr>
+		<th>Class</th>
+		<th>Stream</th>
+		<th>Term</th>
+		<th>Year</th>
+		<th>Title</th>
+		<th>Uploaded By</th>
+		<th>File</th>
+	  </tr>
+	</thead>
+	<tbody>
+	  {% for r in rows %}
+	  <tr>
+		<td>{{ r.class_name }}</td>
+		<td>{{ r.stream or '-' }}</td>
+		<td>{{ r.term }}</td>
+		<td>{{ r.year }}</td>
+		<td>{{ r.title }}</td>
+		<td>{{ r.uploaded_by }}</td>
+		<td>
+		  <a class="btn btn-sm btn-outline-primary"
+			 href="{{ url_for('timetable_file', tt_id=r.id) }}"
+			 target="_blank">Open</a>
+
+		  <a class="btn btn-sm btn-outline-secondary"
+			 href="{{ url_for('timetable_file', tt_id=r.id, dl=1) }}">
+			Download
+		  </a>
+
+		  {% if role in ['admin', 'dos', 'headteacher', 'deputyheadteacher'] %}
+		  <form method="post"
+				action="{{ url_for('timetable_delete', tt_id=r.id) }}"
+				style="display:inline"
+				onsubmit="return confirm('Delete this timetable?');">
+			<button class="btn btn-sm btn-outline-danger">Delete</button>
+		  </form>
+		  {% endif %}
+		</td>
+	  </tr>
+	  {% endfor %}
+	</tbody>
+  </table>
+</div>
+{% endblock %}

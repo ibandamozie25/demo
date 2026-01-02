@@ -1,0 +1,310 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h4 class="mb-3">Comment Rules</h4>
+
+  <!-- NEW: ADD TO COMMENT LIBRARY -->
+  <div class="mb-4 border rounded p-3 bg-light">
+    <h5 class="mb-2">Comment Library</h5>
+    <form method="post" class="row g-2">
+      <input type="hidden" name="form_kind" value="library">
+
+      <div class="col-md-2">
+        <label class="form-label">Category</label>
+        <select name="lib_category" class="form-select">
+          <option value="good">Good / excellent</option>
+          <option value="moderate">Moderate performers</option>
+          <option value="poor">Needing improvement</option>
+        </select>
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label">Role</label>
+        <select name="lib_role" class="form-select">
+          <option value="teacher" selected>Teacher</option>
+          <option value="headteacher">Headteacher</option>
+        </select>
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label">Scope</label>
+        <select name="lib_scope" class="form-select">
+          <option value="overall" selected>Overall</option>
+          <option value="subject">Subject</option>
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">New library comment</label>
+        <textarea name="lib_text"
+                  rows="2"
+                  class="form-control"
+                  placeholder="Write the individualised comment text..."></textarea>
+      </div>
+
+      <div class="col-12 d-flex justify-content-end">
+        <button type="submit" class="btn btn-sm btn-success">
+          Add to Library
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ADD / EDIT RULE FORM (unchanged, except tiny hidden marker) -->
+  <form method="post" class="row g-2 mb-4">
+    <input type="hidden" name="form_kind" value="rule">
+
+    <!-- Role -->
+    <div class="col-md-2">
+      <label class="form-label">Role</label>
+      <select name="role" class="form-select" required>
+        <option value="teacher">Teacher</option>
+        <option value="headteacher">Headteacher</option>
+      </select>
+    </div>
+
+    <!-- Scope -->
+    <div class="col-md-2">
+      <label class="form-label">Scope</label>
+      <select name="scope" class="form-select" required id="scope-select">
+        <option value="overall" selected>Overall</option>
+        <option value="subject">Subject</option>
+      </select>
+    </div>
+
+    <!-- Match type -->
+    <div class="col-md-2">
+      <label class="form-label">Match by</label>
+      <select name="match_type" class="form-select" id="match-type" required>
+        <option value="division">Division</option>
+        <option value="range">Average range</option>
+        <option value="grade">Grade</option>
+      </select>
+    </div>
+
+    <!-- Grade (for grade match) -->
+    <div class="col-md-2 match-field" data-for="grade" style="display:none">
+      <label class="form-label">Grade</label>
+      <select name="grade" class="form-select">
+        <option value="">—</option>
+        {% for g in grades %}
+          <option value="{{ g }}">{{ g }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Division (for division match) -->
+    <div class="col-md-2 match-field" data-for="division">
+      <label class="form-label">Division</label>
+      <select name="division" class="form-select">
+        <option value="">—</option>
+        {% for d in divisions %}
+          <option value="{{ d }}">{{ d }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Range (for range match) -->
+    <div class="col-md-2 match-field" data-for="range" style="display:none">
+      <label class="form-label">Lower</label>
+      <input name="lower_limit" type="number" step="0.01" class="form-control" placeholder="e.g. 80">
+    </div>
+    <div class="col-md-2 match-field" data-for="range" style="display:none">
+      <label class="form-label">Upper</label>
+      <input name="upper_limit" type="number" step="0.01" class="form-control" placeholder="e.g. 100">
+    </div>
+
+    <!-- Optional scoping: class, level, term -->
+    <div class="col-md-2">
+      <label class="form-label">Class (optional)</label>
+      <select name="class_name" class="form-select">
+        <option value="">Any class</option>
+        {% for c in classes %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Level (optional)</label>
+      <select name="level" class="form-select">
+        <option value="">—</option>
+        <option>Lower</option>
+        <option>Upper</option>
+        <option>Candidates</option>
+      </select>
+    </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Term (optional)</label>
+      <select name="term" class="form-select">
+        <option value="">Any term</option>
+        {% for t in terms %}
+          <option value="{{ t }}">{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- (student select block still commented out as in your version) -->
+
+    <!-- Performance band + library presets -->
+    <div class="col-md-3">
+      <label class="form-label">Performance band</label>
+      <select id="performance_band" class="form-select">
+        <option value="">— none / custom —</option>
+        <option value="excellent">Good / excellent performers</option>
+        <option value="moderate">Moderate performers</option>
+        <option value="poor">Needing improvement</option>
+      </select>
+    </div>
+
+    <div class="col-md-6">
+      <label class="form-label">Comment library (from band)</label>
+      <select id="band_preset" class="form-select">
+        <option value="">— choose a comment —</option>
+        {# options will be filled by JS from library_groups #}
+      </select>
+    </div>
+
+    <!-- Template text -->
+    <div class="col-12">
+      <label class="form-label">Template text</label>
+      <textarea name="template_text"
+                id="template_text"
+                rows="3"
+                class="form-control"
+                required
+                placeholder="Write the exact sentence that should appear on the report when this rule matches."></textarea>
+    </div>
+
+    <!-- Priority & active -->
+    <div class="col-md-2">
+      <label class="form-label">Priority</label>
+      <input name="priority" type="number" class="form-control" value="100">
+    </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Active</label>
+      <select name="active" class="form-select">
+        <option value="1" selected>Yes</option>
+        <option value="0">No</option>
+      </select>
+    </div>
+
+    <div class="col-md-2 d-flex align-items-end gap-2">
+      <button class="btn btn-primary w-100" type="submit">Add Rule</button>
+    </div>
+
+    <div class="col-md-2 d-flex align-items-end">
+      <a class="btn btn-outline-secondary w-100" href="{{ url_for('manage_subjects') }}">← Back</a>
+    </div>
+  </form>
+
+  <!-- EXISTING RULES TABLE (unchanged) -->
+  <div class="table-responsive">
+    <table class="table table-sm table-striped align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>#</th>
+          <th>Role</th>
+          <th>Scope</th>
+          <th>Match</th>
+          <th>Class</th>
+          <th>Level</th>
+          <th>Term</th>
+          <th>Student ID</th>
+          <th>Template</th>
+          <th>Priority</th>
+          <th>Active</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.id }}</td>
+          <td>{{ r.role }}</td>
+          <td>{{ r.scope }}</td>
+          <td>
+            {% if r.match_type == 'grade' %}
+              grade={{ r.grade or '—' }}
+            {% elif r.match_type == 'division' %}
+              division={{ r.division or '—' }}
+            {% elif r.match_type == 'range' %}
+              {{ r.lower_limit or '—' }}–{{ r.upper_limit or '—' }}
+            {% endif %}
+          </td>
+          <td>{{ r.class_name or '—' }}</td>
+          <td>{{ r.level or '—' }}</td>
+          <td>{{ r.term or '—' }}</td>
+          <td>{{ r.student_id or '—' }}</td>
+          <td style="max-width:420px">{{ r.template_text }}</td>
+          <td>{{ r.priority }}</td>
+          <td>{{ 'Yes' if r.active else 'No' }}</td>
+          <td>
+            <form method="post"
+                  action="{{ url_for('delete_comment_rule', rid=r.id) }}"
+                  onsubmit="return confirm('Delete this rule?')">
+              <button class="btn btn-sm btn-outline-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="12" class="text-center text-muted">
+            No rules added yet.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ---- Toggle match fields by match_type ----
+(function(){
+  const mt = document.getElementById('match-type');
+  const toggleMatchFields = () => {
+    document.querySelectorAll('.match-field').forEach(el => el.style.display = 'none');
+    const val = mt.value;
+    document.querySelectorAll('.match-field[data-for="' + val + '"]').forEach(
+      el => el.style.display = 'block'
+    );
+  };
+  mt.addEventListener('change', toggleMatchFields);
+  toggleMatchFields();
+})();
+
+// ---- Performance-band presets from library_groups ----
+(function(){
+  const LIBRARY_GROUPS = {{ library_groups|tojson }};
+  const bandSelect = document.getElementById('performance_band');
+  const presetSelect = document.getElementById('band_preset');
+  const textarea = document.getElementById('template_text');
+
+  function refillPresets() {
+    const band = bandSelect.value;
+    // reset options
+    presetSelect.innerHTML = '<option value="">— choose a comment —</option>';
+    if (!band || !LIBRARY_GROUPS[band]) {
+      return;
+    }
+    LIBRARY_GROUPS[band].forEach((item, idx) => {
+      const opt = document.createElement('option');
+      opt.value = item.text;
+      opt.textContent = item.text;
+      presetSelect.appendChild(opt);
+    });
+  }
+
+  bandSelect.addEventListener('change', refillPresets);
+  presetSelect.addEventListener('change', () => {
+    if (presetSelect.value) {
+      textarea.value = presetSelect.value;
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,373 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+
+  <!-- Top bar: title + navigation -->
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="text-primary mb-0">End of Term Report</h4>
+    <div class="btn-group">
+      <a class="btn btn-outline-secondary btn-sm"
+         href="{{ url_for('reports_hub',
+                          class_name=student.class_name,
+                          term=term, year=year) }}">
+        Back to Reports
+      </a>
+      {% if prev_id %}
+      <a class="btn btn-outline-dark btn-sm"
+         href="{{ url_for('report_card',
+                          student_id=prev_id,
+                          term=term, year=year,
+                          include_mid='1' if include_mid else None) }}">
+        « Previous learner
+      </a>
+      {% endif %}
+      {% if next_id %}
+      <a class="btn btn-outline-dark btn-sm"
+         href="{{ url_for('report_card',
+                          student_id=next_id,
+                          term=term, year=year,
+                          include_mid='1' if include_mid else None) }}">
+        Next learner »
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Header card: school + learner info + photo -->
+  <div class="card mb-3 shadow-sm">
+    <div class="card-body">
+      <div class="row">
+        <div class="col-md-8">
+          <h5 class="mb-0">{{ school.name }}</h5>
+          <small class="text-muted">
+            {{ school.tagline }} &middot; {{ school.motto }}
+          </small>
+          <div class="mt-2 small">
+            <div><strong>Tel:</strong> {{ school.phones }}</div>
+            <div><strong>P.O. Box:</strong> {{ school.pobox }}</div>
+          </div>
+
+          <hr class="my-2">
+
+          <div class="row small">
+            <div class="col-sm-6">
+              <div><strong>Learner's Name:</strong>
+                {{ student.first_name }}
+                {% if student.Middle_name %} {{ student.Middle_name }}{% elif student.middle_name %} {{ student.middle_name }}{% endif %}
+                {{ student.last_name }}
+              </div>
+              <div><strong>Student No.:</strong> {{ student.student_number }}</div>
+            </div>
+            <div class="col-sm-6">
+              <div><strong>Class / Stream:</strong>
+                {{ student.class_name }} {{ student.stream or "" }}
+              </div>
+              <div><strong>Term / Year:</strong> {{ term }} / {{ year }}</div>
+              {% if payment_number %}
+              <div><strong>Last Payment No.:</strong> {{ payment_number }}</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="col-md-4 text-center">
+      {% if student.photo %}
+      <div>
+        <img src="{{url_for('static', filename=student.photo.lstrip('/')) }}"
+             alt="Photo"
+             class="img-thumbnail"
+             style="width:80px;height:80px;object-fit:cover;">
+      </div>
+      {% endif %}
+          <div class="small text-muted mt-1">End of Term Report</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary line (Average, Aggregate, Division – no position) -->
+  <div class="row mb-2 small fw-semibold">
+    <div class="col-sm-4">
+      Average:
+      {% if avg_overall is not none %}
+        {{ "%.2f"|format(avg_overall) }}
+      {% else %}
+        &mdash;
+      {% endif %}
+    </div>
+    <div class="col-sm-4 text-center">
+      Aggregate:
+      {% if aggregate is not none %}
+        {{ aggregate }}
+      {% else %}
+        &mdash;
+      {% endif %}
+    </div>
+    <div class="col-sm-4 text-end">
+      Division: {{ division or "NG" }}
+    </div>
+  </div>
+
+  <!-- EOT table -->
+  <div class="card mb-3">
+    <div class="card-header py-2">
+      <strong>End of Term Performance</strong>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-bordered table-sm mb-0 align-middle">
+          <thead class="table-light">
+            <tr class="text-center">
+              <th>Subject</th>
+              <th style="width: 70px;">EOT</th>
+              <th style="width: 80px;">Total (%)</th>
+              <th style="width: 70px;">Grade</th>
+              <th>Comment</th>
+              <th style="width: 80px;">Initials</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+            <tr>
+              <td>
+                {{ r.subject }}
+                {% if r.subject_code %}
+                  <span class="text-muted small">({{ r.subject_code }})</span>
+                {% endif %}
+              </td>
+              <td class="text-center">
+                {% if r.eot is not none %}{{ r.eot|round(0, 'floor')|int }}{% endif %}
+              </td>
+              <td class="text-center">
+                {% if r.total_100 is not none %}{{ r.total_100|round(0, 'floor')|int }}{% endif %}
+              </td>
+              <td class="text-center">{{ r.grade or "" }}</td>
+              <td class="small">{{ r.comment or "" }}</td>
+              <td class="text-center">{{ r.initials or "" }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="fw-semibold">
+              <td>TOTAL</td>
+              <td></td>
+              <td class="text-center">
+                {% if total_sum is not none %}{{ "%.0f"|format(total_sum) }}{% endif %}
+              </td>
+              <td class="text-center">
+                {% if aggregate is not none %}{{ aggregate }}{% endif %}
+              </td>
+              <td colspan="2"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% if include_mid and midterms %}
+  <!-- Optional Mid-Term block inside EOT view -->
+  <div class="card mb-3">
+    <div class="card-header py-2 text-center fw-semibold">
+      Mid Term Exams
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-bordered table-sm mb-0 text-center small">
+          <thead class="table-light">
+          <tr>
+            <th>Assessment</th>
+            {% for code in midterm_subjects %}
+              <th>{{ code }}</th>
+              <th>GR</th>
+            {% endfor %}
+            {% if midterms|selectattr("total")|list %}
+              <th>Total</th>
+            {% endif %}
+          </tr>
+          </thead>
+          <tbody>
+          {% set any_total = midterms|selectattr("total")|list|length > 0 %}
+          {% for m in midterms %}
+            <tr>
+              <td class="text-start">{{ m.assessment }}</td>
+              {% for code in midterm_subjects %}
+                {% set sc = m.scores[code] if m.scores else None %}
+                <td>
+                  {% if sc is not none %}{{ sc }}{% endif %}
+                </td>
+                <td>{{ m.grades[code] if m.grades else "" }}</td>
+              {% endfor %}
+              {% if any_total %}
+                <td>
+                  {% if m.total is not none %}{{ m.total }}{% endif %}
+                </td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Overall comments + special communication (with manual overrides) -->
+
+	<div class="card mb-4">
+		<div class="card-header py-2">
+		  <strong>Overall Remarks &amp; Special Communication</strong>
+		</div>
+		<div class="card-body">
+
+		  <form method="post"
+				action="{{ url_for('save_overall_comment',
+								   student_id=student.id,
+								   term=term, year=year) }}">
+
+			<!-- Teacher band + library -->
+			<div class="row g-2 mb-2">
+			  <div class="col-md-3">
+				<label class="form-label small">Class Manager band</label>
+				<select id="eot_teacher_band" class="form-select form-select-sm">
+				  <option value="">— choose band —</option>
+				  <option value="excellent">Good / excellent performers</option>
+				  <option value="moderate">Moderate performers</option>
+				  <option value="poor">Needing improvement</option>
+				</select>
+			  </div>
+			  <div class="col-md-9">
+				<label class="form-label small">Comment library (from band)</label>
+				<select id="eot_teacher_preset" class="form-select form-select-sm">
+				  <option value="">— choose a comment —</option>
+				</select>
+			  </div>
+			</div>
+
+			<div class="mb-3">
+			  <label class="form-label small fw-semibold">
+				Class Manager’s Remarks
+			  </label>
+			  <textarea name="teacher_overall_custom"
+						id="eot_teacher_comment"
+						rows="2"
+						class="form-control form-control-sm"
+						placeholder="Enter overall remark for class manager (optional – leave blank to use auto comment)">{{ comments.teacher_comment or "" }}</textarea>
+			</div>
+
+			<!-- Head band + library -->
+			<div class="row g-2 mb-2">
+			  <div class="col-md-3">
+				<label class="form-label small">Head Teacher band</label>
+				<select id="eot_head_band" class="form-select form-select-sm">
+				  <option value="">— choose band —</option>
+				  <option value="excellent">Good / excellent performers</option>
+				  <option value="moderate">Moderate performers</option>
+				  <option value="poor">Needing improvement</option>
+				</select>
+			  </div>
+			  <div class="col-md-9">
+				<label class="form-label small">Comment library (from band)</label>
+				<select id="eot_head_preset" class="form-select form-select-sm">
+				  <option value="">— choose a comment —</option>
+				</select>
+			  </div>
+			</div>
+
+			<div class="mb-3">
+			  <label class="form-label small fw-semibold">
+				Head Teacher’s Remarks
+			  </label>
+			  <textarea name="head_overall_custom"
+						id="eot_head_comment"
+						rows="2"
+						class="form-control form-control-sm"
+						placeholder="Enter overall remark for headteacher (optional – leave blank to use auto comment)">{{ comments.head_comment or "" }}</textarea>
+			</div>
+
+			<!-- Special communication (unchanged) -->
+			<div class="mb-3">
+			  <label class="form-label small fw-semibold">
+				Special Communication
+			  </label>
+			  <textarea name="special_communication"
+						rows="2"
+						class="form-control form-control-sm"
+						placeholder="Any special message to the parent / guardian">{{ special_communication or "" }}</textarea>
+			</div>
+
+			<div class="d-flex justify-content-between">
+			  <button type="submit" class="btn btn-primary btn-sm">
+				Save Comments
+			  </button>
+			  <div>
+				{% if prev_id %}
+				<a class="btn btn-outline-secondary btn-sm"
+				   href="{{ url_for('report_card',
+									student_id=prev_id,
+									term=term, year=year,
+									include_mid='1' if include_mid else None) }}">
+				  « Save &amp; Previous
+				</a>
+				{% endif %}
+				{% if next_id %}
+				<a class="btn btn-outline-secondary btn-sm"
+				   href="{{ url_for('report_card',
+									student_id=next_id,
+									term=term, year=year,
+									include_mid='1' if include_mid else None) }}">
+				  Save &amp; Next »
+				</a>
+				{% endif %}
+			  </div>
+			</div>
+
+		  </form>
+		</div>
+	  </div>
+
+</div>
+
+<script>
+(function () {
+  const TEACHER_LIB = {{ teacher_library|tojson }};
+  const HEAD_LIB = {{ head_library|tojson }};
+  const firstName = {{ student.first_name|tojson }};
+
+  function setupBandControls(bandId, presetId, textareaId, libraryGroup) {
+    const bandSel = document.getElementById(bandId);
+    const presetSel = document.getElementById(presetId);
+    const textarea = document.getElementById(textareaId);
+    if (!bandSel || !presetSel || !textarea) return;
+
+    function refillPresets() {
+      const band = bandSel.value;
+      presetSel.innerHTML = '<option value="">— choose a comment —</option>';
+      if (!band || !libraryGroup[band]) return;
+      libraryGroup[band].forEach(function (txt) {
+        const opt = document.createElement('option');
+        opt.value = txt;
+        opt.textContent = txt;
+        presetSel.appendChild(opt);
+      });
+    }
+
+    bandSel.addEventListener('change', refillPresets);
+
+    presetSel.addEventListener('change', function () {
+      let txt = presetSel.value || '';
+      if (!txt) return;
+      if (txt.indexOf('{name}') !== -1) {
+        txt = txt.replaceAll('{name}', firstName);
+      } else {
+        txt = firstName + ' ' + txt;
+      }
+      textarea.value = txt;
+    });
+  }
+
+  setupBandControls('eot_teacher_band', 'eot_teacher_preset', 'eot_teacher_comment', TEACHER_LIB);
+  setupBandControls('eot_head_band', 'eot_head_preset', 'eot_head_comment', HEAD_LIB);
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,156 @@
+
+{% extends 'base.html' %}
+{% block content %}
+<div class="container mt-4">
+  <h3 class="text-center text-primary mb-4">Asset Register</h3>
+
+  <!-- Add Asset -->
+  <form method="POST" class="row g-3 mb-4 border p-3 rounded shadow">
+    <input type="hidden" name="add_asset" value="1">
+    <div class="col-md-4">
+      <label class="form-label">Asset Name</label>
+      <input type="text" name="asset_name" class="form-control" required>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">Description</label>
+      <input type="text" name="description" class="form-control">
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">Model</label>
+      <input type="text" name="model" class="form-control">
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">Purchase Date</label>
+      <input type="date" name="purchase_date" class="form-control" required>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Condition</label>
+      <select name="asset_condition" class="form-select" required>
+        <option value="">-- Select --</option>
+        <option>Good</option>
+        <option>Fair</option>
+        <option>Damaged</option>
+        <option>Archived</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Value (UGX)</label>
+      <input type="number" step="0.01" name="value" class="form-control">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Quantity</label>
+      <input type="number" name="qty" class="form-control" min="0" value="1">
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">Location</label>
+      <input type="text" name="location" class="form-control">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Asset Code</label>
+      <input type="text" name="asset_code" class="form-control">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Company Number</label>
+      <input type="text" name="company_number" class="form-control">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Useful Life (years)</label>
+      <input type="number" name="useful_life_years" class="form-control" min="0">
+      <small class="text-muted">Auto-sets Current vs Non-current</small>
+    </div>
+
+    <div class="col-12 text-end">
+      <button class="btn btn-success" type="submit">Add Asset</button>
+    </div>
+  </form>
+
+  <!-- Filters -->
+  <form method="GET" class="row g-3 mb-3 border p-3 rounded shadow">
+    <div class="col-md-3">
+      <label class="form-label">From</label>
+      <input type="date" name="from_date" class="form-control" value="{{ from_date or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">To</label>
+      <input type="date" name="to_date" class="form-control" value="{{ to_date or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Asset Name</label>
+      <input type="text" name="asset_name" class="form-control" value="{{ asset_name or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Category</label>
+      <select name="category" class="form-select">
+        <option value="" {{ 'selected' if not category else '' }}>All</option>
+        <option value="current" {{ 'selected' if category=='current' else '' }}>Current</option>
+        <option value="non-current" {{ 'selected' if category=='non-current' else '' }}>Non-current</option>
+      </select>
+    </div>
+    <div class="col-12 d-flex gap-2 justify-content-end">
+      <a class="btn btn-outline-secondary" href="{{ url_for('asset_register') }}">Reset</a>
+      <button class="btn btn-primary" type="submit">Search</button>
+    </div>
+  </form>
+
+  <!-- Export / Nav -->
+  <div class="d-flex justify-content-end gap-2 mb-2">
+    <a href="{{ url_for('export_assets', from_date=from_date, to_date=to_date, asset_name=asset_name, category=category) }}" class="btn btn-success">Export to Excel</a>
+    <a href="{{ url_for('export_assets_pdf', from_date=from_date, to_date=to_date, asset_name=asset_name, category=category) }}" class="btn btn-dark">Export to PDF</a>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-primary">← Back</a>
+  </div>
+
+  <!-- Table -->
+  <div class="table-responsive">
+    <table class="table table-bordered table-striped align-middle">
+      <thead class="table-primary">
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Model</th>
+          <th>Location</th>
+          <th>Asset Code</th>
+          <th>Company #</th>
+          <th>Purchase Date</th>
+          <th>Condition</th>
+          <th>Qty</th>
+          <th>Useful Life (yrs)</th>
+          <th>Category</th>
+          <th>Value (UGX)</th>
+          <th style="width:120px;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in assets %}
+        <tr>
+          <td>{{ a.asset_name }}</td>
+          <td>{{ a.description or '' }}</td>
+          <td>{{ a.model or '' }}</td>
+          <td>{{ a.location or '' }}</td>
+          <td>{{ a.asset_code or '' }}</td>
+          <td>{{ a.company_number or '' }}</td>
+          <td>{{ a.purchase_date or '' }}</td>
+          <td>{{ a.asset_condition or '' }}</td>
+          <td>{{ a.qty or 0 }}</td>
+          <td>{{ a.useful_life_years or 0 }}</td>
+          <td class="{{ 'text-success' if (a.category or '').lower()=='current' else 'text-muted' }}">{{ a.category or '' }}</td>
+          <td>{{ "{:,.0f}".format(a.value or 0) }}</td>
+          
+			<td class="d-flex gap-1">
+			  <a href="{{ url_for('edit_asset', asset_id=a.id) }}" class="btn btn-sm btn-warning">Edit</a>
+			  <form method="POST" action="{{ url_for('delete_asset', asset_id=a.id) }}"
+					onsubmit="return confirm('Delete this asset permanently?');">
+				<button class="btn btn-sm btn-danger">Delete</button>
+			  </form>
+			</td>
+
+        </tr>
+        {% else %}
+        <tr><td colspan="13" class="text-center text-muted">No assets found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

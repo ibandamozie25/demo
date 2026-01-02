@@ -1,0 +1,71 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h4 class="mb-3">Broadcast Special Communication</h4>
+
+  <form method="post" class="row g-2 mb-4">
+    <div class="col-md-3">
+      <label class="form-label">Report type</label>
+      <select name="report_type" class="form-select form-select-sm">
+        <option value="both">Midterm &amp; End of Term</option>
+        <option value="midterm">Midterm only</option>
+        <option value="eot">End of Term only</option>
+      </select>
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">Term</label>
+      <select name="term" class="form-select form-select-sm" required>
+        {% for t in terms %}
+          <option value="{{ t }}">{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Year</label>
+      <input type="number" name="year"
+             class="form-control form-control-sm"
+             value="{{ now().year if false }}">
+    </div>
+
+    <div class="col-md-4">
+      <label class="form-label">Class</label>
+      <select name="class_name" class="form-select form-select-sm">
+        <option value="">All classes</option>
+        {% for c in classes %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">Special communication message</label>
+      <textarea name="message" rows="3"
+                class="form-control form-control-sm"
+                placeholder="This message will be written to special communication for the selected term/year (and class)."></textarea>
+    </div>
+
+    <div class="col-12 mt-2">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox"
+               value="1" id="override_existing" name="override_existing">
+        <label class="form-check-label small" for="override_existing">
+          Override existing special communication where already set
+          (leave unchecked to only fill empty ones).
+        </label>
+      </div>
+    </div>
+
+    <div class="col-12 mt-3">
+      <button type="submit" class="btn btn-primary btn-sm">
+        Apply to reports
+      </button>
+      <a href="{{ url_for('reports_hub') }}" class="btn btn-outline-secondary btn-sm">
+        Back to Reports
+      </a>
+    </div>
+  </form>
+</div>
+{% endblock %}

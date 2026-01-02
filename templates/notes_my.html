@@ -1,0 +1,42 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h4 class="text-primary mb-3">My Subject Notes</h4>
+
+  {% if not notes %}
+    <p class="text-muted">No notes have been uploaded yet for your subjects.</p>
+  {% else %}
+  <table class="table table-sm table-striped">
+    <thead>
+      <tr>
+        <th>Subject</th>
+        <th>Class</th>
+        <th>Stream</th>
+        <th>Term</th>
+        <th>Year</th>
+        <th>Title</th>
+        <th>Download</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for n in notes %}
+      <tr>
+        <td>{{ n.subject_code }}</td>
+        <td>{{ n.class_name or "" }}</td>
+        <td>{{ n.stream or "" }}</td>
+        <td>{{ n.term }}</td>
+        <td>{{ n.year }}</td>
+        <td>{{ n.title }}</td>
+        <td>
+          <a href="{{ url_for('notes_file', note_id=n.id) }}" class="btn btn-sm btn-outline-primary">
+            Download
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

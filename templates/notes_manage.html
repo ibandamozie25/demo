@@ -1,0 +1,120 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h4 class="text-primary mb-3">Subject Notes – Admin</h4>
+
+  <div class="card mb-4">
+    <div class="card-header">Upload notes (PDF)</div>
+    <div class="card-body">
+      <form method="post" enctype="multipart/form-data" class="row g-2">
+        <div class="col-md-3">
+          <label class="form-label">Subject</label>
+          <select name="subject_code" class="form-select" required>
+            <option value="">-- choose --</option>
+            {% for s in subjects %}
+            <option value="{{ s.code }}">{{ s.name }} ({{ s.code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+		<div class="col-md-2">
+		  <label class="form-label">Class</label>
+		  <select name="class_name" class="form-select">
+			<option value="">All classes</option>
+			{% for c in classes %}
+			  <option value="{{ c }}">{{ c }}</option>
+			{% endfor %}
+		  </select>
+		</div>
+
+		<div class="col-md-2">
+		  <label class="form-label">Stream</label>
+		  <select name="stream" class="form-select">
+			<option value="">All streams</option>
+			{% for s in streams %}
+			  <option value="{{ s }}">{{ s }}</option>
+			{% endfor %}
+		  </select>
+		</div>
+
+        <div class="col-md-2">
+          <label class="form-label">Term</label>
+          <select name="term" class="form-select">
+            <option>Term 1</option>
+            <option>Term 2</option>
+            <option>Term 3</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Year</label>
+          <input type="number" name="year" class="form-control"
+                 value="{{ current_year or 2025 }}">
+        </div>
+        <div class="col-md-6 mt-2">
+          <label class="form-label">Title</label>
+          <input type="text" name="title" class="form-control" required>
+        </div>
+        <div class="col-md-6 mt-2">
+          <label class="form-label">Short description</label>
+          <textarea name="description" class="form-control" rows="2"></textarea>
+        </div>
+        <div class="col-md-4 mt-2">
+          <label class="form-label">PDF file</label>
+          <input type="file" name="note_file" class="form-control" required>
+        </div>
+        <div class="col-md-2 mt-4 d-flex align-items-end">
+          <button class="btn btn-primary w-100">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <table class="table table-sm table-striped">
+	<thead>
+	  <tr>
+		<th>Subject</th>
+		<th>Class</th>
+		<th>Stream</th>
+		<th>Term</th>
+		<th>Year</th>
+		<th>Title</th>
+		<th>Uploaded By</th>
+		<th>File</th>
+	  </tr>
+	</thead>
+	<tbody>
+	  {% for n in notes %}
+	  <tr>
+		<td>{{ n.subject_code }}</td>
+		<td>{{ n.class_name or 'All' }}</td>
+		<td>{{ n.stream or 'All' }}</td>
+		<td>{{ n.term }}</td>
+		<td>{{ n.year }}</td>
+		<td>{{ n.title }}</td>
+		<td>{{ n.uploaded_by }}</td>
+		<td>
+		  <!-- open in browser -->
+		  <a class="btn btn-sm btn-outline-primary"
+			 href="{{ url_for('notes_file', note_id=n.id) }}"
+			 target="_blank">Open</a>
+
+		  <!-- download -->
+		  <a class="btn btn-sm btn-outline-secondary"
+			 href="{{ url_for('notes_file', note_id=n.id, dl=1) }}">
+			Download
+		  </a>
+
+		  <!-- delete -->
+		  <form method="post"
+				action="{{ url_for('notes_delete', note_id=n.id) }}"
+				style="display:inline"
+				onsubmit="return confirm('Delete this note?');">
+			<button class="btn btn-sm btn-outline-danger">Delete</button>
+		  </form>
+		</td>
+	  </tr>
+	  {% endfor %}
+	</tbody>
+  </table>
+</div>
+{% endblock %}

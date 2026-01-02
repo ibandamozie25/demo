@@ -1,0 +1,77 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h3 class="text-primary mb-3">Work Plan Detail</h3>
+
+  <div class="card shadow-sm">
+    <div class="card-header fw-semibold d-flex justify-content-between">
+      <span>Work Plan for {{ plan.plan_date }}</span>
+      <span>
+        {{ plan.first_name }} {{ plan.last_name }}
+        {% if plan.department %}<small class="text-muted">({{ plan.department }})</small>{% endif %}
+      </span>
+    </div>
+    <div class="card-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-3">Date</dt>
+        <dd class="col-sm-9">{{ plan.plan_date }}</dd>
+
+        <dt class="col-sm-3">Term / Week</dt>
+        <dd class="col-sm-9">
+          {{ plan.term }}
+          {% if plan.week_label %}- {{ plan.week_label }}{% endif %}
+        </dd>
+
+        <dt class="col-sm-3">Class / Stream</dt>
+        <dd class="col-sm-9">
+          {{ plan.class_name or "All classes" }}
+          {% if plan.stream %} ({{ plan.stream }}){% endif %}
+        </dd>
+
+        <dt class="col-sm-3">Period</dt>
+        <dd class="col-sm-9">{{ plan.period_from }} – {{ plan.period_to }}</dd>
+
+        <dt class="col-sm-3">Planned activities</dt>
+        <dd class="col-sm-9">
+          <pre class="mb-0" style="white-space: pre-wrap;">{{ plan.activities }}</pre>
+        </dd>
+
+        <dt class="col-sm-3">Done / accomplished</dt>
+        <dd class="col-sm-9">
+          {% if plan.done_activities %}
+            <pre class="mb-0" style="white-space: pre-wrap;">{{ plan.done_activities }}</pre>
+          {% else %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        </dd>
+
+        <dt class="col-sm-3">Status</dt>
+        <dd class="col-sm-9">
+          <span class="badge
+            {% if plan.status == 'done' %}bg-success
+            {% elif plan.status == 'not_done' %}bg-danger
+            {% else %}bg-warning text-dark{% endif %}">
+            {{ plan.status|replace('_',' ')|title }}
+          </span>
+        </dd>
+
+        <dt class="col-sm-3">Comment</dt>
+        <dd class="col-sm-9">
+          {% if plan.comment %}
+            <pre class="mb-0" style="white-space: pre-wrap;">{{ plan.comment }}</pre>
+          {% else %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="mt-3">
+    <a href="{{ url_for('workplans') }}" class="btn btn-outline-secondary">
+      Back to my work plans
+    </a>
+  </div>
+</div>
+{% endblock %}

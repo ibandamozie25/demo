@@ -1,0 +1,68 @@
+
+{% extends 'base.html' %}
+{% block content %}
+<div class="container mt-4">
+  <h4 class="mb-3 text-primary">Edit Asset</h4>
+  <form method="POST" class="row g-3 border p-3 rounded shadow">
+    <div class="col-md-4">
+      <label class="form-label">Asset Name</label>
+      <input type="text" name="asset_name" class="form-control" value="{{ asset.asset_name }}" required>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">Description</label>
+      <input type="text" name="description" class="form-control" value="{{ asset.description or '' }}">
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">Model</label>
+      <input type="text" name="model" class="form-control" value="{{ asset.model or '' }}">
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">Purchase Date</label>
+      <input type="date" name="purchase_date" class="form-control" value="{{ asset.purchase_date }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Condition</label>
+      <select name="asset_condition" class="form-select">
+        {% set cond = asset.asset_condition or '' %}
+        <option value="">-- Select --</option>
+        <option {{ 'selected' if cond=='Good' }}>Good</option>
+        <option {{ 'selected' if cond=='Fair' }}>Fair</option>
+        <option {{ 'selected' if cond=='Damaged' }}>Damaged</option>
+        <option {{ 'selected' if cond=='Archived' }}>Archived</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Value (UGX)</label>
+      <input type="number" step="0.01" name="value" class="form-control" value="{{ asset.value or 0 }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Quantity</label>
+      <input type="number" name="qty" class="form-control" value="{{ asset.qty or 0 }}">
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">Location</label>
+      <input type="text" name="location" class="form-control" value="{{ asset.location or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Asset Code</label>
+      <input type="text" name="asset_code" class="form-control" value="{{ asset.asset_code or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Company Number</label>
+      <input type="text" name="company_number" class="form-control" value="{{ asset.school_number or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Useful Life (years)</label>
+      <input type="number" name="useful_life_years" class="form-control" min="0" value="{{ asset.useful_life_years or 0 }}">
+      <small class="text-muted">Current/Non-current auto-updates on save</small>
+    </div>
+
+    <div class="col-12 d-flex gap-2 justify-content-end">
+      <a href="{{ url_for('asset_register') }}" class="btn btn-outline-secondary">Cancel</a>
+      <button class="btn btn-primary" type="submit">Save changes</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

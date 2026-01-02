@@ -1,0 +1,126 @@
+
+{% extends 'base.html' %}
+{% block content %}
+
+<style>
+  .page{ width:185mm; max-width:100%; margin:0 auto 20px; background:#fff; border:1px solid #111; border-radius:8px; padding:10px 10px 6px; font-size:11.5px; line-height:1.24; }
+  .hdr{line-height:1.05;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}
+  .hdr .center{flex:3;text-align:center}.hdr .left,.hdr .right{flex:1}
+  .hdr .name{font-weight:800;font-size:17px}
+  .hdr .tagline{font-weight:600}.hdr .motto{font-style:italic}.hdr .meta{font-size:10.5px;color:#374151}
+  .section-title{text-align:center;font-weight:700;margin:4px 0 6px;text-decoration:underline}
+  .rowline{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:3px}
+  .rowline>div{flex:1 1 220px}
+  table.report{width:100%;border-collapse:collapse;table-layout:fixed}
+  table.report th,table.report td{border:1px solid #111;padding:2px 4px;font-size:11px;word-wrap:break-word;overflow-wrap:break-word}
+  .small{font-size:10.5px}.muted{color:#6b7280}
+  .legend{font-size:10.5px}.footer-note{margin-top:6px;font-size:10.5px}
+  @media print{
+    @page{ margin:8mm }
+    body *{ visibility:hidden!important }
+    .page, .page *{ visibility:visible!important }
+    .page{ border:1px solid #000; box-shadow:none; border-radius:0; margin:0 auto!important; background:#fff; break-after:page; }
+    header, nav, aside, footer, .navbar, .sidebar, .no-print{ display:none!important }
+    html{ zoom:1 } body{ -webkit-print-color-adjust:exact; print-color-adjust:exact }
+  }
+</style>
+
+<div class="no-print d-flex justify-content-between align-items-center mb-2">
+  <a class="btn btn-outline-primary btn-sm" href="{{ url_for('reports_hub') }}">Reports</a>
+  <button class="btn btn-success btn-sm" onclick="window.print()"><i class="bi bi-printer"></i> Print All</button>
+</div>
+
+{% for rep in reports %}
+<div class="page">
+  <!-- Header -->
+  <div class="hdr">
+    <div class="left">
+      <img src="{{ url_for('static', filename='logo.jpg') }}" alt="School Logo" width="80">
+    </div>
+    <div class="center">
+      <div class="name">{{ (rep.school.name if rep.school else 'SCHOOL NAME') }}</div>
+      {% if rep.school and rep.school.tagline %}<div class="tagline">{{ rep.school.tagline }}</div>{% endif %}
+      {% if rep.school and rep.school.motto %}<div class="motto">{{ rep.school.motto }}</div>{% endif %}
+      {% if rep.school and (rep.school.phones or rep.school.pobox) %}
+        <div class="meta">{{ rep.school.phones or '' }} &nbsp;&nbsp;&nbsp; {{ rep.school.pobox or '' }}</div>
+      {% endif %}
+    </div>
+    <div class="right"></div>
+  </div>
+
+  <div class="section-title">Mid-Term Report</div>
+
+  <!-- Identifiers -->
+  <div class="rowline small">
+    <div><strong>NAME:</strong> {{ rep.student.first_name }} {{ rep.student.middle_name or '' }} {{ rep.student.last_name }}</div>
+    <div><strong>STUDENT’S NUMBER:</strong> {{ rep.student.student_number }}</div>
+  </div>
+  <div class="rowline small">
+    <div><strong>CLASS:</strong> {{ rep.student.class_name }} {{ rep.student.stream or '' }}</div>
+    <div><strong>TERM:</strong> {{ rep.term }} &nbsp;&nbsp; <strong>YEAR:</strong> {{ rep.year }}</div>
+  </div>
+
+  <!-- Midterm main table -->
+  <table class="report">
+    <thead>
+      <tr>
+        <th>SUBJECT</th>
+        {% if rep.show_oth %}<th>OTH</th>{% endif %}
+        {% if rep.show_bot %}<th>BOT</th>{% endif %}
+        {% if rep.show_mid %}<th>MID</th>{% endif %}
+        <th>MID AVG <span class="muted small">(100%)</span></th>
+        <th>GRADE</th>
+        <th>COMMENT</th>
+        <th>INITIALS</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rep.rows %}
+      <tr>
+        <td>{{ r.name }}{% if r.code %} <span class="muted small">({{ r.code }})</span>{% endif %}</td>
+        {% if rep.show_oth %}<td>{{ r.OTH if r.OTH is not none else '' }}</td>{% endif %}
+        {% if rep.show_bot %}<td>{{ r.BOT if r.BOT is not none else '' }}</td>{% endif %}
+        {% if rep.show_mid %}<td>{{ r.MID if r.MID is not none else '' }}</td>{% endif %}
+        <td>{{ r.AVG if r.AVG is not none else '' }}</td>
+        <td>{{ r.grade or '' }}</td>
+        <td>{{ r.comment or '' }}</td>
+        <td>{{ r.initials or '' }}</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td><strong>TOTAL</strong></td>
+        {% if rep.show_oth %}<td></td>{% endif %}
+        {% if rep.show_bot %}<td></td>{% endif %}
+        {% if rep.show_mid %}<td></td>{% endif %}
+        <td>{{ rep.total_mid_sum or '' }}</td>
+        <td colspan="2"><strong>Aggregate:</strong> {{ rep.aggregate if rep.aggregate is not none else '' }} &nbsp;&nbsp; <strong>Division:</strong> {{ rep.division or 'NG' }}</td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Summary -->
+  <div class="rowline small" style="margin-top:6px;">
+    <div><strong>Average (Mid):</strong> {{ rep.avg_mid_overall or '' }}</div>
+  </div>
+
+  <!-- Remarks / Legend -->
+  <div class="small" style="margin-top:8px;">
+    <div><strong>Class Teacher’s comment:</strong> <em>{{ rep.comments.teacher_comment if rep.comments else '' }}</em></div>
+    <div><strong>Head Teacher’s Comment:</strong> <em>{{ rep.comments.head_comment if rep.comments else '' }}</em></div>
+  </div>
+
+  {% if rep.grading %}
+  <div class="legend" style="margin-top:8px;">
+    <strong>Marks</strong> →
+    {% for g in rep.grading %}
+      {{ g.lower_limit }}–{{ g.upper_limit }} : <strong>{{ g.grade }}</strong>{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="footer-note"><em>Invalid without school Stamp</em></div>
+</div>
+{% endfor %}
+
+{% endblock %}

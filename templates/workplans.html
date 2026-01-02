@@ -1,0 +1,311 @@
+
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h3 class="text-primary mb-3">Teacher Work Plans</h3>
+
+  <div class="row">
+    <!-- Add / Edit form -->
+    <div class="col-md-5 mb-4">
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">
+          {% if editing %}
+            Edit Work Plan
+          {% else %}
+            Add Work Plan
+          {% endif %}
+        </div>
+        <div class="card-body">
+          <form method="post" class="row g-3">
+            {% if editing %}
+              <input type="hidden" name="plan_id" value="{{ editing.id }}">
+            {% endif %}
+
+            <div class="col-12">
+              <label class="form-label">Date *</label>
+              <input type="date" name="plan_date"
+                     class="form-control"
+                     value="{{ (editing.plan_date if editing else today) or '' }}"
+                     required>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Term *</label>
+              <select name="term" class="form-select" required>
+                {% for t in terms %}
+                  <option value="{{ t }}"
+                          {% if editing and editing.term == t %}selected{% endif %}>
+                    {{ t }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Week</label>
+              <select name="week_label" class="form-select">
+                <option value="">-- choose week --</option>
+                {% for w in weeks %}
+                  <option value="{{ w }}"
+                          {% if editing and editing.week_label == w %}selected{% endif %}>
+                    {{ w }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Class</label>
+              <select name="class_name" class="form-select">
+                <option value="">All classes</option>
+                {% for c in classes %}
+                  <option value="{{ c }}"
+                          {% if editing and editing.class_name == c %}selected{% endif %}>
+                    {{ c }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Stream</label>
+              <select name="stream" class="form-select">
+                <option value="">All streams</option>
+                {% for s in streams %}
+                  <option value="{{ s }}"
+                          {% if editing and editing.stream == s %}selected{% endif %}>
+                    {{ s }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Period from *</label>
+              <input type="time" name="period_from"
+                     class="form-control" required
+                     value="{{ editing.period_from if editing else '' }}">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Period to *</label>
+              <input type="time" name="period_to"
+                     class="form-control" required
+                     value="{{ editing.period_to if editing else '' }}">
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">Planned activities *</label>
+              <textarea name="planned_activities" rows="3"
+                        class="form-control"
+                        placeholder="What do you plan to do?" required>{{ editing.activities if editing else '' }}</textarea>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">Done / accomplished activities</label>
+              <textarea name="done_activities" rows="2"
+                        class="form-control"
+                        placeholder="What was completed?">{{ editing.done_activities if editing else '' }}</textarea>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">Comment (reason if not done)</label>
+              <textarea name="comment" rows="2"
+                        class="form-control">{{ editing.comment if editing else '' }}</textarea>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Status</label>
+              <select name="status" class="form-select">
+                {% set st = editing.status if editing else 'pending' %}
+                <option value="pending" {% if st == 'pending' %}selected{% endif %}>Pending</option>
+                <option value="done" {% if st == 'done' %}selected{% endif %}>Done</option>
+                <option value="not_done" {% if st == 'not_done' %}selected{% endif %}>Not done</option>
+              </select>
+            </div>
+
+            <div class="col-md-6 d-flex align-items-end justify-content-end">
+              <button type="submit" name="action" value="save"
+                      class="btn btn-primary me-2">
+                {% if editing %}Update{% else %}Save{% endif %}
+              </button>
+              <a href="{{ url_for('workplans') }}"
+                 class="btn btn-outline-secondary">Clear</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Saved work plans -->
+    <div class="col-md-7 mb-4">
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">
+          Saved Work Plans
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-sm table-striped mb-0 align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th>Date</th>
+                  <th>Term / Week</th>
+                  <th>Class</th>
+                  <th>Period</th>
+                  <th>Planned activities</th>
+                  <th>Done</th>
+                  <th>Status</th>
+                  <th class="text-end">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for p in plans %}
+                  <tr>
+                    <td>{{ p.plan_date }}</td>
+                    <td>
+                      {{ p.term }}
+                      {% if p.week_label %}<br><small>{{ p.week_label }}</small>{% endif %}
+                    </td>
+                    <td>
+                      {{ p.class_name or "All" }}
+                      {% if p.stream %} ({{ p.stream }}){% endif %}
+                    </td>
+                    <td>{{ p.period_from }} - {{ p.period_to }}</td>
+                    <td>{{ p.planned_activities }}</td>
+                    <td>{{ p.done_activities or "-" }}</td>
+                    <td>
+                      <span class="badge
+                        {% if p.status == 'done' %}bg-success
+                        {% elif p.status == 'not_done' %}bg-danger
+                        {% else %}bg-warning text-dark{% endif %}">
+                        {{ p.status|replace('_',' ')|title }}
+                      </span>
+                    </td>
+                    <td class="text-end">
+                      <!-- View (modal) -->
+                      <button type="button"
+                              class="btn btn-sm btn-outline-secondary btn-view-plan"
+                              data-bs-toggle="modal"
+                              data-bs-target="#workPlanModal"
+                              data-date="{{ p.plan_date }}"
+                              data-term="{{ p.term }}"
+                              data-week="{{ p.week_label or '' }}"
+                              data-class="{{ p.class_name or '' }}"
+                              data-stream="{{ p.stream or '' }}"
+                              data-from="{{ p.period_from }}"
+                              data-to="{{ p.period_to }}"
+                              data-planned="{{ p.planned_activities }}"
+                              data-done="{{ p.done_activities or '' }}"
+                              data-status="{{ p.status }}"
+                              data-comment="{{ p.comment or '' }}">
+                        View
+                      </button>
+
+                      <!-- Edit -->
+                      <a href="{{ url_for('workplans', edit=p.id) }}"
+                         class="btn btn-sm btn-outline-primary">
+                        Edit
+                      </a>
+
+                      <!-- Delete -->
+                      <form method="post" class="d-inline"
+                            onsubmit="return confirm('Delete this work plan?');">
+                        <input type="hidden" name="plan_id" value="{{ p.id }}">
+                        <button type="submit" name="action" value="delete"
+                                class="btn btn-sm btn-outline-danger">
+                          Delete
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="8" class="text-center text-muted py-3">
+                      No work plans yet.
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- View modal -->
+<div class="modal fade" id="workPlanModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Work Plan Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"
+                aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-3">Date</dt>
+          <dd class="col-sm-9" id="wp-date"></dd>
+
+          <dt class="col-sm-3">Term / Week</dt>
+          <dd class="col-sm-9" id="wp-term-week"></dd>
+
+          <dt class="col-sm-3">Class</dt>
+          <dd class="col-sm-9" id="wp-class"></dd>
+
+          <dt class="col-sm-3">Period</dt>
+          <dd class="col-sm-9" id="wp-period"></dd>
+
+          <dt class="col-sm-3">Planned activities</dt>
+          <dd class="col-sm-9" id="wp-planned"></dd>
+
+          <dt class="col-sm-3">Done activities</dt>
+          <dd class="col-sm-9" id="wp-done"></dd>
+
+          <dt class="col-sm-3">Status</dt>
+          <dd class="col-sm-9" id="wp-status"></dd>
+
+          <dt class="col-sm-3">Comment</dt>
+          <dd class="col-sm-9" id="wp-comment"></dd>
+        </dl>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary"
+                data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Fill modal with row data
+document.addEventListener('DOMContentLoaded', function () {
+  const modal = document.getElementById('workPlanModal');
+  const dateEl = document.getElementById('wp-date');
+  const termWeek = document.getElementById('wp-term-week');
+  const klass = document.getElementById('wp-class');
+  const period = document.getElementById('wp-period');
+  const planned = document.getElementById('wp-planned');
+  const done = document.getElementById('wp-done');
+  const statusEl = document.getElementById('wp-status');
+  const comment = document.getElementById('wp-comment');
+
+  document.querySelectorAll('.btn-view-plan').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const week = btn.dataset.week || '';
+      dateEl.textContent = btn.dataset.date || '';
+      termWeek.textContent = btn.dataset.term + (week ? ' / ' + week : '');
+      klass.textContent = (btn.dataset.class || 'All') +
+                             (btn.dataset.stream ? ' (' + btn.dataset.stream + ')' : '');
+      period.textContent = (btn.dataset.from || '') + ' - ' + (btn.dataset.to || '');
+      planned.textContent = btn.dataset.planned || '';
+      done.textContent = btn.dataset.done || '-';
+      statusEl.textContent = btn.dataset.status || '';
+      comment.textContent = btn.dataset.comment || '';
+    });
+  });
+});
+</script>
+{% endblock %}
