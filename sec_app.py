@@ -92,7 +92,7 @@ KG_CLASSES = ["Baby","Middle","Top"]
 # --- School branding (adjust freely or load from DB/config) ---
 SCHOOL_NAME = "DEMO DAY & BOARDING"
 SCHOOL_SUB = "PRIMARY SCHOOL – KAMPALA"
-SCHOOL_PHONE_LINES = ["+25678878411, +256759685640, +256773589232, +256750347624"]
+SCHOOL_PHONE_LINES = ["+256778878411, +256759685640, +256773589232, +256750347624"]
 SCHOOL_ADDRESS = "P.O Box 1X1X1 Kampala"
 SCHOOL_EMAIL = ""
 SCHOOL_LOGO_PATH = "static/icons/logo.jpg" # put your crest here
@@ -7059,7 +7059,7 @@ def build_report_payload(conn, student_id, term, year, include_mid=False):
             name="DEMO DAY & BOARDING",
             tagline="PRIMARY SCHOOL – KAMPALA",
             motto="Strive for the best",
-            phones="+25678878411, +256759685640, +256773589232, +256750347624",
+            phones="+256778878411, +256759685640, +256773589232, +256750347624",
             pobox="P.O Box 1X1X1 Kampala",       
         ),
         student=student,
@@ -7318,7 +7318,7 @@ def build_midterm_payload(conn, student_id, term, year):
         motto=current_app.config.get("SCHOOL_MOTTO", "Code the future"),
         phones=current_app.config.get(
             "SCHOOL_PHONES",
-            "+25678878411, +256759685640, +256773589232, +256750347624"
+            "+256778878411, +256759685640, +256773589232, +256750347624"
         ),
         pobox=current_app.config.get("P.O Box 1X1X1 Kampala"),
     )
@@ -12149,7 +12149,7 @@ def report_card(student_id, term, year):
             name="DEMO DAY & BOARDING",
             tagline="PRIMARY SCHOOL – KAMPALA",
             motto="Code the future",
-            phones="+25678878411, +256759685640, +256773589232, +256750347624",
+            phones="+256778878411, +256759685640, +256773589232, +256750347624",
             pobox="P.O Box 1X1X1 Kampala",        
         ),
         student=student,
@@ -12280,7 +12280,7 @@ def report_card_print_batch_pdf():
                 name=current_app.config.get("SCHOOL_NAME", "DEMO DAY & BOARDING"),
                 tagline=current_app.config.get("SCHOOL_TAGLINE", "PRIMARY SCHOOL – KAMPALA"),
                 motto=current_app.config.get("SCHOOL_MOTTO", "Code the future"),
-                phones=current_app.config.get("SCHOOL_PHONES", "+25678878411, +256759685640, +256773589232, +256750347624"),
+                phones=current_app.config.get("SCHOOL_PHONES", "+256778878411, +256759685640, +256773589232, +256750347624"),
                 pobox=current_app.config.get("SCHOOL_POBOX", "P.O Box 1X1X1 Kampala"),              
             ))
             p["next_term_date"] = p.get("next_term_date") or ""
@@ -21038,7 +21038,7 @@ def student_statement_by_id(student_id: int):
     school = {
         "name": current_app.config.get("SCHOOL_NAME", "DEMO DAY AND BOARDING PRIMARY SCHOOL – KAMPALA"),
         "address": current_app.config.get("SCHOOL_ADDRESS", "P.O Box 1X1X1 Kampala"),
-        "phone": current_app.config.get("SCHOOL_PHONE", "+25678878411, +256759685640, +256773589232, +256750347624"),
+        "phone": current_app.config.get("SCHOOL_PHONE", "+256778878411, +256759685640, +256773589232, +256750347624"),
         "logo_url": url_for("static", filename="logo.jpg"),      
     }
     return render_template(
@@ -21166,7 +21166,7 @@ def student_statement_pdf(student_id: int):
     school = {
         "name": current_app.config.get("SCHOOL_NAME", "DEMO DAY AND BOARDING PRIMARY SCHOOL – KAMPALA"),
         "address": current_app.config.get("SCHOOL_ADDRESS", "P.O Box 1X1X1 Kampala"),
-        "phone": current_app.config.get("SCHOOL_PHONE", "+25678878411, +256759685640, +256773589232, +256750347624"),
+        "phone": current_app.config.get("SCHOOL_PHONE", "+256778878411, +256759685640, +256773589232, +256750347624"),
         }
     logo_path = os.path.join(current_app.static_folder, "logo.jpg")
     # ----- styles -----
