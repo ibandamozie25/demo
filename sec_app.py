@@ -15512,9 +15512,7 @@ def register_student():
     f = request.form
     file_photo = request.files.get("photo")
 
-
     raw_first = (f.get("first_name") or "").strip()
-    # accept both Middle_name (old forms) and middle_name (this template)
     raw_middle = (f.get("Middle_name") or f.get("middle_name") or "").strip()
     raw_last = (f.get("last_name") or "").strip()
     raw_sex = (f.get("sex") or "").strip()
@@ -15522,11 +15520,25 @@ def register_student():
     raw_stream = (f.get("stream") or "").strip()
     raw_section = (f.get("section") or "").strip()
 
+    # ✅ parents + residence + house
+    parent1_name = (f.get("parent1_name") or "").strip() or None
+    parent1_contact = (f.get("parent1_contact") or "").strip() or None
+    parent2_name = (f.get("parent2_name") or "").strip() or None
+    parent2_contact = (f.get("parent2_contact") or "").strip() or None
+    parent_email = (f.get("parent_email") or "").strip() or None
+    residence = (f.get("residence") or "").strip() or None
+    house = (f.get("house") or "").strip() or None
+
+    # ✅ allow manual student_number/fees_code, else auto
+    manual_student_number = (f.get("student_number") or "").strip()
+    manual_fees_code = (f.get("fees_code") or "").strip()
+
     class_name = norm_class(raw_class)
     stream = norm_stream(raw_stream)
     section = norm_section(raw_section)
     sex = norm_sex(raw_sex)
 
+    # validations (keep yours)
     if not raw_first or not raw_last:
         flash("First and Last name are required.", "danger")
         return redirect(url_for("register_student"))
@@ -15547,8 +15559,8 @@ def register_student():
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
     try:
-        student_number = generate_student_number(conn)
-        fees_code = generate_fees_code(conn)
+        student_number = manual_student_number or generate_student_number(conn)
+        fees_code = manual_fees_code or generate_fees_code(conn)
 
         photo_path, photo_blob, photo_mime = save_student_photo(file_photo)
 
@@ -15558,33 +15570,42 @@ def register_student():
                 first_name, Middle_name, last_name, sex,
                 class_name, stream, section,
                 student_number, year_of_joining, term_joined, date_joined,
-                fees_code, photo, photo_blob, photo_mime, archived, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s,
-                      %s, %s, %s, %s, 0, 'active')
+                fees_code,
+                residence, house,
+                parent_name, parent_contact,
+                parent2_name, parent2_contact,
+                parent_email,
+                photo, photo_blob, photo_mime,
+                archived, status
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s,
+                %s, %s, %s,
+                0, 'active'
+            )
             """,
             (
-                raw_first,
-                raw_middle,
-                raw_last,
-                sex,
-                class_name,
-                stream,
-                section,
-                student_number,
-                year_of_joining,
-                term_joined,
-                date_joined,
+                raw_first, raw_middle, raw_last, sex,
+                class_name, stream, section,
+                student_number, year_of_joining, term_joined, date_joined,
                 fees_code,
-                photo_path,
-                photo_blob,
-                photo_mime,
+                residence, house,
+                parent1_name, parent1_contact,
+                parent2_name, parent2_contact,
+                parent_email,
+                photo_path, photo_blob, photo_mime,
             ),
         )
         conn.commit()
-        cur.close()
         flash(f"Student {raw_first} {raw_last} registered (#{student_number}).", "success")
         return redirect(url_for("register_student"))
+
     except mysql.connector.Error as e:
         conn.rollback()
         flash(f"Failed to register: {e}", "danger")
@@ -15594,6 +15615,10 @@ def register_student():
         flash(f"Unexpected error: {e}", "danger")
         return redirect(url_for("register_student"))
     finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
         conn.close()
 
 
@@ -18137,7 +18162,6 @@ try:
 except Exception:
     pd = None
 
-
 @app.route("/admin/bursaries/import", methods=["POST"])
 @require_role("admin", "bursar", "headteacher")
 def bursaries_import():
@@ -18194,7 +18218,7 @@ def bursaries_import():
     for idx, row in enumerate(rows, start=2):
         sn = (row.get("student_number") or "").strip()
         ln = (row.get("last_name") or "").strip()
-        sponsor = (row.get("sponsor_name") or "").strip() or None
+        sponsor = (row.get("sponsor_name") or "").strip()
 
         try:
             year = int(str(row.get("year") or "").strip())
@@ -18219,8 +18243,9 @@ def bursaries_import():
                 cur.execute("""
                     INSERT INTO bursaries (student_id, sponsor_name, amount, term, year)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE(student_id, year, term, sponsor_name)
-                    DO UPDATE SET amount=excluded.amount
+                    ON DUPLICATE KEY UPDATE
+                    amount = VALUES(amount),
+                    sponsor_name=VALUES(sponsor_name) 
                 """, (student["id"], sponsor, amount, t, year))
                 processed += 1
         except Exception as e:
@@ -18242,7 +18267,7 @@ def bursaries_import():
         flash(msg, "warning")
     else:
         flash(msg, "success")
-    return redirect(url_for("bursaries"))
+    return redirect(url_for("bursaries")) 
 
 
 @app.route("/admin/fix_fees", methods=["POST"])
