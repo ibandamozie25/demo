@@ -1,10 +1,9 @@
-
 {% extends 'base.html' %}
 {% block content %}
 <div class="container mt-4">
 
   <div class="d-flex justify-content-between align-items-center mb-2">
-    <h4 class="text-primary m-0">Manage Requirements</h4>
+    <h4 class="text-primary m-0">Manage Requirements (Per Year/Term/Group)</h4>
   </div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -18,50 +17,91 @@
     {% endif %}
   {% endwith %}
 
+  {% set _terms = [(1,'Term 1'),(2,'Term 2'),(3,'Term 3')] %}
+  {% set _groups = fee_groups or ['Old','New'] %}
+
   <!-- Add / Edit form -->
-  <form method="post" class="border rounded p-3 shadow-sm bg-light mb-3">
+  <form method="post" class="border rounded p-3 shadow-sm bg-light mb-3" onsubmit="syncTermMode()">
     <input type="hidden" name="id" id="req_id">
+    <input type="hidden" name="term_mode" id="req_term_mode" value="">
+
     <div class="row g-3">
-      <div class="col-md-3">
+      <div class="col-md-2">
+        <label class="form-label">Year <span class="text-danger">*</span></label>
+        <input type="number" name="year" id="req_year" class="form-control"
+               value="{{ default_year or '' }}" required>
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label">Term</label>
+        <select name="term_no" id="req_term_no" class="form-select" onchange="syncTermMode()">
+          <option value="">All/Generic</option>
+          {% for n, lbl in _terms %}
+            <option value="{{ n }}" {{ 'selected' if (default_term_no|string)==(n|string) else '' }}>{{ lbl }}</option>
+          {% endfor %}
+        </select>
+        <div class="small text-muted">Leave blank for all terms</div>
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label">Fee Group <span class="text-danger">*</span></label>
+        <select name="fee_group" id="req_fee_group" class="form-select" required>
+          {% for g in _groups %}
+            <option value="{{ g }}" {{ 'selected' if (default_fee_group or 'Old')==g else '' }}>{{ g }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-md-2">
         <label class="form-label">Class *</label>
-        <select name="class_name" id="class_name" class="form-select" required>
+        <select name="class_name" id="req_class_name" class="form-select" required>
           <option value="">-- Select --</option>
           {% for c in classes %}
             <option value="{{ c }}">{{ c }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="col-md-3">
-        <label class="form-label">Term (optional)</label>
-        <select name="term" id="term" class="form-select">
-          <option value="">All/Generic</option>
-          {% for t in terms %}
-            <option value="{{ t }}">{{ t }}</option>
-          {% endfor %}
+
+      <div class="col-md-2">
+        <label class="form-label">Section (optional)</label>
+        <select name="section" id="req_section" class="form-select">
+          <option value="">All</option>
+          <option value="Day">Day</option>
+          <option value="Boarding">Boarding</option>
         </select>
       </div>
-      <div class="col-md-3">
-        <label class="form-label">Item Name *</label>
-        <input name="name" id="name" class="form-control" required>
-      </div>
-      <div class="col-md-1">
-        <label class="form-label">Qty</label>
-        <input type="number" name="qty" id="qty" class="form-control" value="1" min="1">
-      </div>
+
       <div class="col-md-2">
-        <label class="form-label">Amount (UGX)</label>
-        <input type="number" step="0.01" name="amount" id="amount" class="form-control" required>
+        <label class="form-label">Qty</label>
+        <input type="number" name="qty" id="req_qty" class="form-control" value="1" min="1">
       </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Item Name *</label>
+        <input name="name" id="req_name" class="form-control" required>
+      </div>
+
+      <div class="col-md-3">
+        <label class="form-label">Amount (UGX)</label>
+        <input type="number" step="0.01" name="amount" id="req_amount" class="form-control" required>
+      </div>
+
       <div class="col-12 text-end">
         <button class="btn btn-primary">Save</button>
-		<a class="btn btn-primary" href="{{ url_for('admin_class_fees') }}">← Back </a>
-      </div> 
+        <button type="button" class="btn btn-outline-secondary" onclick="resetReqForm()">Clear</button>
+        <a class="btn btn-primary" href="{{ url_for('admin_class_fees') }}">← Back</a>
+      </div>
     </div>
   </form>
 
   <!-- Filters -->
   <form method="get" class="row g-2 mb-3">
-    <div class="col-md-4">
+    <div class="col-md-3">
+      <label class="form-label">Year</label>
+      <input type="number" name="year" class="form-control" value="{{ q_year or default_year or '' }}">
+    </div>
+
+    <div class="col-md-3">
       <label class="form-label">Class</label>
       <select name="class_name" class="form-select">
         <option value="">All</option>
@@ -70,16 +110,28 @@
         {% endfor %}
       </select>
     </div>
-    <div class="col-md-4">
+
+    <div class="col-md-3">
       <label class="form-label">Term</label>
-      <select name="term" class="form-select">
+      <select name="term_no" class="form-select">
         <option value="">All</option>
-        {% for t in terms %}
-          <option value="{{ t }}" {{ 'selected' if q_term==t else '' }}>{{ t }}</option>
+        {% for n, lbl in _terms %}
+          <option value="{{ n }}" {{ 'selected' if (q_term_no|string)==(n|string) else '' }}>{{ lbl }}</option>
         {% endfor %}
       </select>
     </div>
-    <div class="col-md-4 d-flex align-items-end justify-content-end">
+
+    <div class="col-md-3">
+      <label class="form-label">Fee Group</label>
+      <select name="fee_group" class="form-select">
+        <option value="">All</option>
+        {% for g in _groups %}
+          <option value="{{ g }}" {{ 'selected' if q_group==g else '' }}>{{ g }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-12 d-flex justify-content-end">
       <button class="btn btn-outline-primary">Filter</button>
     </div>
   </form>
@@ -90,8 +142,11 @@
       <thead class="table-primary">
         <tr>
           <th>#</th>
-          <th>Class</th>
+          <th>Year</th>
           <th>Term</th>
+          <th>Group</th>
+          <th>Class</th>
+          <th>Section</th>
           <th>Item</th>
           <th>Qty</th>
           <th>Amount (UGX)</th>
@@ -102,24 +157,36 @@
         {% for r in items %}
         <tr>
           <td>{{ loop.index }}</td>
+          <td>{{ r.year }}</td>
+          <td>{{ 'All' if not r.term_no else ('Term ' ~ r.term_no) }}</td>
+          <td>{{ r.fee_group }}</td>
           <td>{{ r.class_name }}</td>
-          <td>{{ r.term or 'All/Generic' }}</td>
-          <td>{{ r.name }}</td>
+          <td>{{ r.section or 'All' }}</td>
+          <td class="text-start">{{ r.name }}</td>
           <td>{{ r.qty }}</td>
           <td>{{ "{:,.0f}".format(r.amount or 0) }}</td>
           <td class="text-nowrap">
-           <!-- <button class="btn btn-sm btn-outline-primary"
-                    onclick="fillEdit({{ r.id }}, '{{ r.class_name }}', '{{ r.term or '' }}', '{{ r.name|e }}', {{ r.qty or 1 }}, {{ r.amount or 0 }})">
-              Edit
-            </button>-->
-            <form method="post" action="{{ url_for('admin_requirements_delete', rid=r.id) }}" class="d-inline"
-                  onsubmit="return confirm('Delete this requirement?');">
+            <button class="btn btn-sm btn-outline-primary"
+              onclick="fillReqEdit(
+                {{ r.id }},
+                {{ r.year or 0 }},
+                {{ r.term_no if r.term_no is not none else 'null' }},
+                '{{ r.fee_group or 'Old' }}',
+                '{{ r.class_name }}',
+                '{{ r.section or '' }}',
+                '{{ r.name|e }}',
+                {{ r.qty or 1 }},
+                {{ r.amount or 0 }}
+              )">Edit</button>
+
+            <form method="post" action="{{ url_for('admin_requirements_delete', rid=r.id) }}"
+                  class="d-inline" onsubmit="return confirm('Delete this requirement?');">
               <button class="btn btn-sm btn-outline-danger">Delete</button>
             </form>
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7">No requirements found.</td></tr>
+        <tr><td colspan="10">No requirements found.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -127,14 +194,37 @@
 </div>
 
 <script>
-function fillEdit(id, cls, term, name, qty, amount) {
+function syncTermMode() {
+  const termNo = document.getElementById('req_term_no').value;
+  // if term is blank -> generic/all terms
+  document.getElementById('req_term_mode').value = (termNo === '' ? 'all' : '');
+}
+
+function fillReqEdit(id, year, termNo, feeGroup, cls, section, name, qty, amount) {
   document.getElementById('req_id').value = id;
-  document.getElementById('class_name').value = cls;
-  document.getElementById('term').value = term || '';
-  document.getElementById('name').value = name;
-  document.getElementById('qty').value = qty || 1;
-  document.getElementById('amount').value = amount || 0;
+  document.getElementById('req_year').value = year || '';
+  document.getElementById('req_term_no').value = (termNo === null ? '' : termNo);
+  document.getElementById('req_fee_group').value = feeGroup || 'Old';
+  document.getElementById('req_class_name').value = cls || '';
+  document.getElementById('req_section').value = section || '';
+  document.getElementById('req_name').value = name || '';
+  document.getElementById('req_qty').value = qty || 1;
+  document.getElementById('req_amount').value = amount || 0;
+
+  syncTermMode();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+function resetReqForm() {
+  document.getElementById('req_id').value = '';
+  document.getElementById('req_name').value = '';
+  document.getElementById('req_qty').value = 1;
+  document.getElementById('req_amount').value = '';
+  // keep year/term/group/class as user may be working within a period
+  syncTermMode();
+}
+
+// set initial state
+syncTermMode();
 </script>
 {% endblock %}

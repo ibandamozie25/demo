@@ -471,23 +471,42 @@ def _active_year_term():
         conn.close()
 
 
-
 def norm_class(s: str | None) -> str | None:
     if not s:
         return None
-    s = s.strip().upper()
-    order = ["Baby", "Middle", "Top", "P1", "P2", "P3", "P4", "P5", "P6", "P7"]
-    # allow mixed-case input, return canonical case
-    key = s.capitalize() if s in ("Baby", "Middle", "Top") else s
-    canon = {"baby": "Baby", "middle": "Middle", "top": "Top"}
-    if s in order:
-        return canon.get(s, s) if s.startswith("P") else canon.get(s, s)
-    if key in ("Baby", "Middle", "Top"):
-        return key
-    if s.startswith("P") and s[1:].isdigit():
-        n = int(s[1:])
+
+    raw = str(s).strip()
+    u = raw.upper().replace(" ", "")
+
+    # canonical map
+    canon = {
+        "BABY": "Baby",
+        "MIDDLE": "Middle",
+        "TOP": "Top",
+        "P1": "P1",
+        "P2": "P2",
+        "P3": "P3",
+        "P4": "P4",
+        "P5": "P5",
+        "P6": "P6",
+        "P7": "P7",
+    }
+
+    # direct match
+    if u in canon:
+        return canon[u]
+
+    # heuristics: P3A, P3-WEST, etc.
+    if u.startswith("P") and len(u) >= 2 and u[1].isdigit():
+        n = int(u[1])
         if 1 <= n <= 7:
             return f"P{n}"
+
+    # heuristics: BABYCLASS, MIDDLECLASS, TOPCLASS
+    for k in ("BABY", "MIDDLE", "TOP"):
+        if u.startswith(k):
+            return canon[k]
+
     return None
     
 def normalize_class_enum(value):
@@ -6196,6 +6215,17 @@ def _term_order_val(t: str) -> int:
     order = {"Term 1": 1, "Term 2": 2, "Term 3": 3}
     return order.get(t, 99)
 
+def student_fee_group(stu: dict, current_year: int) -> str:
+    """
+    New if joined in current academic year, else old.
+    year_of_joining is VARCHAR in your table, so we cast safely.
+    """
+    try:
+        yoj = int((stu.get("year_of_joining") or "").strip())
+    except Exception:
+        yoj = None
+
+    return "new" if (yoj == int(current_year)) else "old"
 
 def compute_student_financials(student_id: int, class_name: str, term: str, year: int) -> dict:
     """
@@ -6220,7 +6250,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
     try:
         # --- student + section ---
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT class_name, section FROM students WHERE id=%s", (student_id,))
+        cur.execute("SELECT class_name, section, year_of_joining FROM students WHERE id=%s", (student_id,))
         stu = cur.fetchone() or {}
         cur.close()
 
@@ -17005,131 +17035,225 @@ def admin_requirements():
     conn = get_db_connection()
     ensure_requirements_schema(conn)
 
-    # ----- POST: create/update (upsert by unique (name,class,term,year)) -----
+    fee_groups = ["Old", "New"]
+
+    # Defaults from active academic year/term
+    ay = get_active_academic_year() or {}
+    active_year = int(ay.get("year") or ay.get("active_year") or datetime.now().year)
+    active_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
+    active_term_no = {"term 1": 1, "term 2": 2, "term 3": 3}.get(active_term.lower(), 1)
+
+    def term_no_to_label(n):
+        return {1: "Term 1", 2: "Term 2", 3: "Term 3"}.get(int(n or 0), None)
+
+    # ---------------- POST: create/update ----------------
     if request.method == "POST":
         f = request.form
         rid = (f.get("id") or "").strip()
+
         class_name = (f.get("class_name") or "").strip()
         name = (f.get("name") or "").strip()
-        term = (f.get("term") or "").strip() or None
+
         qty_raw = (f.get("qty") or "").strip()
         amt_raw = (f.get("amount") or "").strip()
+
         year_raw = (f.get("year") or "").strip()
+        term_no_raw = (f.get("term_no") or "").strip()
+        fee_group = (f.get("fee_group") or "Old").strip() or "Old"
 
         # qty/amount
         try:
             qty = int(qty_raw)
-        except:
+        except Exception:
             qty = 1
         try:
             amount = float(amt_raw)
-        except:
+        except Exception:
             amount = 0.0
 
-        # decide year (unchanged logic)
-        ay = (get_active_academic_year() or {})
-        from datetime import datetime
+        # defaults
         try:
-            year_val = int(year_raw or ay.get("year") or ay.get("active_year") or datetime.now().year)
+            year_val = int(year_raw or active_year)
         except Exception:
-            year_val = datetime.now().year
+            year_val = active_year
+
+        try:
+            term_no = int(term_no_raw or active_term_no)
+        except Exception:
+            term_no = active_term_no
+        if term_no not in (1, 2, 3):
+            term_no = active_term_no
+
+        if fee_group not in fee_groups:
+            fee_group = "Old"
+
+        # Keep "All/Generic" option: allow None term (=> term_no NULL)
+        raw_term_mode = (f.get("term_mode") or "").strip().lower()  # optional helper from UI
+        if raw_term_mode == "all":
+            term_label = None
+        else:
+            # if your UI sends term directly, allow it; else convert term_no to label
+            term_label = (f.get("term") or "").strip() or term_no_to_label(term_no)
 
         if not class_name or not name:
             conn.close()
             flash("Class and item name are required.", "warning")
             return redirect(url_for("admin_requirements"))
 
-        # fetch OLD row when editing so we can recompute old side if class/term changed
-        old_class = old_term = None
-        if rid:
-            cur = conn.cursor(dictionary=True)
-            cur.execute("SELECT class_name, term FROM requirements WHERE id=%s", (rid,))
-            old = cur.fetchone() or {}
-            old_class = (old.get("class_name") or "").strip()
-            old_term = (old.get("term") or None)
-            cur.close()
-
         cur = conn.cursor(dictionary=True)
         try:
+            # If editing, keep old pointers to recompute both sides if moved
+            old_class = old_term_no = old_year = old_group = None
             if rid:
                 cur.execute("""
-                    UPDATE requirements
-                       SET class_name=%s, name=%s, qty=%s, amount=%s, term=%s
-                     WHERE id=%s
-                """, (class_name, name, qty, amount, term, rid))
-            else:
+                    SELECT class_name, year, term_no, fee_group
+                    FROM requirements WHERE id=%s
+                """, (rid,))
+                old = cur.fetchone() or {}
+                old_class = (old.get("class_name") or "").strip()
+                old_year = old.get("year")
+                old_term_no = old.get("term_no")
+                old_group = (old.get("fee_group") or "").strip()
+
+                # update row (keep logic)
                 cur.execute("""
-                    INSERT INTO requirements (class_name, name, qty, amount, term, year)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        qty = VALUES(qty),
-                        amount = VALUES(amount),
-                        term = VALUES(term)
-                """, (class_name, name, qty, amount, term, year_val))
+                    UPDATE requirements
+                       SET class_name=%s,
+                           name=%s,
+                           qty=%s,
+                           amount=%s,
+                           term=%s,
+                           year=%s,
+                           fee_group=%s
+                     WHERE id=%s
+                """, (class_name, name, qty, amount, term_label, year_val, fee_group, rid))
+            else:
+                # ---- MANUAL UPSERT by (class, name, year, term_no, fee_group) ----
+                # term_no is generated, so match by term label and year/group too
+                cur.execute("""
+                    SELECT id
+                    FROM requirements
+                    WHERE class_name=%s
+                      AND name=%s
+                      AND year=%s
+                      AND fee_group=%s
+                      AND (
+                          (term_no IS NULL AND %s IS NULL)
+                          OR (term_no = %s)
+                      )
+                    LIMIT 1
+                """, (class_name, name, year_val, fee_group, term_label, term_no))
+                existing = cur.fetchone()
+
+                if existing:
+                    cur.execute("""
+                        UPDATE requirements
+                           SET qty=%s, amount=%s, term=%s
+                         WHERE id=%s
+                    """, (qty, amount, term_label, existing["id"]))
+                else:
+                    cur.execute("""
+                        INSERT INTO requirements (class_name, name, qty, amount, term, year, fee_group)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    """, (class_name, name, qty, amount, term_label, year_val, fee_group))
+
             conn.commit()
-            cur.close()
             flash("Requirement saved.", "success")
 
-            # 🔁 NEW side: recompute affected class for specific term (or all if global)
-            _recompute_class(class_name, term_to_no(term))
+            # 🔁 Recompute NEW side (your existing logic)
+            _recompute_class(class_name, term_no if term_label else None)
 
-            # 🔁 OLD side: if moved across class/term, recompute previous location too
-            if rid and (old_class and (old_class != class_name or (old_term or "") != (term or ""))):
-                _recompute_class(old_class, term_to_no(old_term))
+            # 🔁 Recompute OLD side if record moved
+            if rid and old_class:
+                moved = (
+                    old_class != class_name
+                    or int(old_year or 0) != int(year_val)
+                    or (int(old_term_no or 0) != int(term_no) if term_label else old_term_no is not None)
+                    or (old_group != fee_group)
+                )
+                if moved:
+                    _recompute_class(old_class, int(old_term_no) if old_term_no else None)
 
         except mysql.connector.Error as e:
             conn.rollback()
             if getattr(e, "errno", None) == 1062:
-                flash("Duplicate item for this class/term/year.", "danger")
+                flash("Duplicate item for this class/term/year/group.", "danger")
             else:
                 flash(f"Failed to save: {e}", "danger")
         finally:
-            try: cur.close()
-            except: pass
+            cur.close()
             conn.close()
 
-        return redirect(url_for("admin_requirements"))
+        return redirect(url_for("admin_requirements", year=year_val, term_no=term_no, fee_group=fee_group))
 
-    # ----- GET: list + filters (unchanged logic) -----
+    # ---------------- GET: list + filters ----------------
     q_class = (request.args.get("class_name") or "").strip()
-    q_term = (request.args.get("term") or "").strip()
     q_year = (request.args.get("year") or "").strip()
+    q_term_no = (request.args.get("term_no") or "").strip()
+    q_group = (request.args.get("fee_group") or "").strip()
 
-    where, params = ["1=1"], []
+    try:
+        year_filter = int(q_year) if q_year else active_year
+    except Exception:
+        year_filter = active_year
+
+    try:
+        term_no_filter = int(q_term_no) if q_term_no else active_term_no
+    except Exception:
+        term_no_filter = active_term_no
+
+    group_filter = q_group if q_group in fee_groups else "Old"
+
+    where = ["1=1"]
+    params = []
+
     if q_class:
-        where.append("class_name=%s"); params.append(q_class)
-    if q_term:
-        where.append("term=%s"); params.append(q_term)
-    if q_year:
-        try:
-            where.append("year=%s"); params.append(int(q_year))
-        except ValueError:
-            pass
+        where.append("class_name=%s")
+        params.append(q_class)
+
+    where.append("year=%s")
+    params.append(year_filter)
+
+    where.append("fee_group=%s")
+    params.append(group_filter)
+
+    # allow filter by term_no (optional)
+    where.append("(term_no=%s OR term_no IS NULL)")
+    params.append(term_no_filter)
 
     cur = conn.cursor(dictionary=True)
     cur.execute(f"""
-        SELECT id, class_name, name, qty, amount, term, year
+        SELECT id, class_name, name, qty, amount, term, year, term_no, fee_group
           FROM requirements
          WHERE {' AND '.join(where)}
          ORDER BY class_name, COALESCE(term,''), name
     """, params)
-    rows = cur.fetchall(); cur.close()
+    rows = cur.fetchall() or []
+    cur.close()
 
     # dropdown values
     cur = conn.cursor(dictionary=True)
     cur.execute("SELECT DISTINCT class_name FROM classes ORDER BY 1")
-    classes = [r["class_name"] for r in cur.fetchall()]
-    cur.execute("SELECT DISTINCT year FROM requirements ORDER BY year DESC")
-    years = [r["year"] for r in cur.fetchall()]
-    cur.close(); conn.close()
+    classes = [r["class_name"] for r in (cur.fetchall() or [])]
+    cur.close()
+    conn.close()
 
     return render_template(
         "admin_requirements.html",
         items=rows,
         classes=classes,
         terms=TERMS,
-        years=years,
-        q_class=q_class, q_term=q_term, q_year=q_year
+        fee_groups=fee_groups,
+
+        # defaults for UI
+        default_year=year_filter,
+        default_term_no=term_no_filter,
+        default_fee_group=group_filter,
+
+        q_class=q_class,
+        q_year=str(year_filter),
+        q_term_no=str(term_no_filter),
+        q_group=group_filter,
     )
 
 @app.route("/admin/requirements/<int:rid>/delete", methods=["POST"])
@@ -17784,7 +17908,7 @@ def archive_hub():
 
     return render_template(
         "archive_hub.html",
-        rows=rows, classes=classes, years=years,
+        rows=row s, classes=classes, years=years,
         q_class=q_class, q_sn=q_sn, q_year=q_year, q_lname=q_lname
     )
 
@@ -17798,47 +17922,116 @@ def admin_class_fees():
 
         class_options = ["Baby", "Middle", "Top", "P1", "P2", "P3", "P4", "P5", "P6", "P7"]
         section_options = ["Day", "Boarding"]
+        fee_groups = ["Old", "New"]
+
+        # Defaults from active academic year/term
+        ay = get_active_academic_year() or {}
+        active_year = int(ay.get("year") or ay.get("active_year") or datetime.now().year)
+        active_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
+        active_term_no = {"term 1": 1, "term 2": 2, "term 3": 3}.get(active_term.lower(), 1)
 
         if request.method == "POST":
             f = request.form
-            raw_class   = (f.get("class_name") or "").strip()
-            raw_section = (f.get("section") or "").strip()
-            raw_level   = (f.get("level") or "").strip() or None
-            raw_amount  = (f.get("amount") or "").strip()
 
-            class_name = (raw_class or "").title()
-            section    = norm_section(raw_section)  # 'Day' or 'Boarding' (enum values you use)
-            level      = raw_level
+            raw_class = (f.get("class_name") or "").strip()
+            raw_section = (f.get("section") or "").strip()
+            raw_level = (f.get("level") or "").strip() or None
+            raw_amount = (f.get("amount") or "").strip()
+
+            # New inputs
+            year_raw = (f.get("year") or "").strip()
+            term_no_raw = (f.get("term_no") or "").strip()
+            fee_group = (f.get("fee_group") or "Old").strip() or "Old"
+
+            class_name = norm_class(raw_class) or (raw_class or "").title()
+            section = norm_section(raw_section)  # Day/Boarding
+            level = raw_level
 
             try:
                 amount = float(raw_amount)
             except ValueError:
                 amount = None
 
+            # year/term_no defaults
+            try:
+                year_val = int(year_raw or active_year)
+            except Exception:
+                year_val = active_year
+
+            try:
+                term_no = int(term_no_raw or active_term_no)
+            except Exception:
+                term_no = active_term_no
+
+            if term_no not in (1, 2, 3):
+                term_no = active_term_no
+
+            if fee_group not in fee_groups:
+                fee_group = "Old"
+
             if not class_name or not section or amount is None:
-                flash("Please provide Class, Section (Day/Boarding), and a valid Amount.", "warning")
-            else:
-                cur = conn.cursor(dictionary=True)
+                flash("Please provide Class, Section, Amount, Year, Term, and Fee Group.", "warning")
+                return redirect(url_for("admin_class_fees"))
+
+            cur = conn.cursor(dictionary=True)
+            try:
+                # ---- MANUAL UPSERT (prevents overwrite across years/terms/groups) ----
                 cur.execute("""
-                    INSERT INTO class_fees (class_name, section, level, amount)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        amount = VALUES(amount),
-                        level  = VALUES(level)
-                """, (class_name, section, level, amount))
+                    SELECT id
+                    FROM class_fees
+                    WHERE class_name=%s AND section=%s AND year=%s AND term_no=%s AND fee_group=%s
+                    LIMIT 1
+                """, (class_name, section, year_val, term_no, fee_group))
+                existing = cur.fetchone()
+
+                if existing:
+                    cur.execute("""
+                        UPDATE class_fees
+                           SET level=%s, amount=%s
+                         WHERE id=%s
+                    """, (level, amount, existing["id"]))
+                else:
+                    cur.execute("""
+                        INSERT INTO class_fees (class_name, section, level, amount, year, term_no, fee_group)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    """, (class_name, section, level, amount, year_val, term_no, fee_group))
+
                 conn.commit()
-                cur.close()
-
-                # 🔁 Recompute whole class (all 3 terms in active year)
-                _recompute_class(class_name, None)
-
                 flash("Class fee saved.", "success")
 
-        # List fees (unchanged)
+                # 🔁 Recompute class for that term (keep your existing logic)
+                _recompute_class(class_name, term_no)
+
+            except mysql.connector.Error as e:
+                conn.rollback()
+                flash(f"Failed to save: {e}", "danger")
+            finally:
+                cur.close()
+
+            return redirect(url_for("admin_class_fees", year=year_val, term_no=term_no, fee_group=fee_group))
+
+        # ---------------- GET: list + filters ----------------
+        q_year = (request.args.get("year") or "").strip()
+        q_term_no = (request.args.get("term_no") or "").strip()
+        q_group = (request.args.get("fee_group") or "").strip()
+
+        try:
+            year_filter = int(q_year) if q_year else active_year
+        except Exception:
+            year_filter = active_year
+
+        try:
+            term_no_filter = int(q_term_no) if q_term_no else active_term_no
+        except Exception:
+            term_no_filter = active_term_no
+
+        fee_group_filter = q_group if q_group in fee_groups else "Old"
+
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, class_name, section, level, amount
+            SELECT id, class_name, section, level, amount, year, term_no, fee_group
             FROM class_fees
+            WHERE year=%s AND term_no=%s AND fee_group=%s
             ORDER BY
               CASE class_name
                 WHEN 'Baby' THEN 0 WHEN 'Middle' THEN 1 WHEN 'Top' THEN 2
@@ -17847,14 +18040,25 @@ def admin_class_fees():
                 ELSE 99
               END,
               section
-        """)
-        fees = cur.fetchall(); cur.close()
+        """, (year_filter, term_no_filter, fee_group_filter))
+        fees = cur.fetchall() or []
+        cur.close()
 
         return render_template(
             "admin_class_fees.html",
             class_options=class_options,
             section_options=section_options,
-            fees=fees
+            fee_groups=fee_groups,
+
+            fees=fees,
+
+            # defaults for form + filter UI
+            default_year=year_filter,
+            default_term_no=term_no_filter,
+            default_fee_group=fee_group_filter,
+
+            active_year=active_year,
+            active_term_no=active_term_no
         )
     finally:
         conn.close()
