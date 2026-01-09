@@ -17908,7 +17908,7 @@ def archive_hub():
 
     return render_template(
         "archive_hub.html",
-        rows=row s, classes=classes, years=years,
+        rows=rows, classes=classes, years=years,
         q_class=q_class, q_sn=q_sn, q_year=q_year, q_lname=q_lname
     )
 
