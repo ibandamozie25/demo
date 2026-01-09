@@ -1,4 +1,3 @@
-
 {% extends 'base.html' %}
 {% block content %}
 <div class="container mt-5">
@@ -18,9 +17,9 @@
 
   <!-- Add New Year -->
   <form method="POST" class="mb-3 d-flex justify-content-center gap-2">
-    <input type="text" name="year" placeholder="Enter academic year (e.g., 2025)" class="form-control w-25" required>
+    <input type="text" name="year" placeholder="Enter academic year (e.g., 2026)" class="form-control w-25" required>
     <button type="submit" name="add" class="btn btn-primary">Add Year</button>
-	<a href="{{ url_for('dashboard') }}" class="btn btn-success"> ← Back</a>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-success"> ← Back</a>
   </form>
 
   <!-- Academic Years Table -->
@@ -29,22 +28,63 @@
       <tr>
         <th>Year</th>
         <th>Active</th>
+        <th>Locked</th>
         <th>Set as Active</th>
+        <th>Lock/Unlock</th>
       </tr>
     </thead>
     <tbody>
       {% for y in years %}
       <tr>
         <td>{{ y.year }}</td>
+
         <td>{{ 'Yes' if y.is_active else 'No' }}</td>
+
+        <td>
+          {% if y.is_locked %}
+            <span class="badge bg-secondary">Locked</span>
+          {% else %}
+            <span class="badge bg-success">Open</span>
+          {% endif %}
+        </td>
+
         <td>
           {% if not y.is_active %}
-          <form method="POST">
-            <input type="hidden" name="year" value="{{ y.year }}">
-            <button type="submit" name="activate" class="btn btn-sm btn-success">Activate</button>
-          </form>
+            <form method="POST" class="d-inline">
+              <input type="hidden" name="year" value="{{ y.year }}">
+              <button type="submit" name="activate" class="btn btn-sm btn-success"
+                      {% if y.is_locked %}disabled{% endif %}>
+                Activate
+              </button>
+            </form>
+            {% if y.is_locked %}
+              <small class="text-muted ms-2">Unlock to activate</small>
+            {% endif %}
           {% else %}
-          <span class="text-success">Current</span>
+            <span class="text-success">Current</span>
+          {% endif %}
+        </td>
+
+        <td>
+          {% if y.is_active %}
+            <span class="text-muted">—</span>
+          {% else %}
+            {% if y.is_locked %}
+              <form method="POST" class="d-inline">
+                <input type="hidden" name="year" value="{{ y.year }}">
+                <button type="submit" name="unlock" class="btn btn-sm btn-outline-primary">
+                  Unlock
+                </button>
+              </form>
+            {% else %}
+              <form method="POST" class="d-inline">
+                <input type="hidden" name="year" value="{{ y.year }}">
+                <button type="submit" name="lock" class="btn btn-sm btn-outline-dark"
+                        onclick="return confirm('Lock year {{ y.year }}? This will prevent fees/requirements edits for that year.');">
+                  Lock
+                </button>
+              </form>
+            {% endif %}
           {% endif %}
         </td>
       </tr>
@@ -66,8 +106,11 @@
   <!-- Active Year and Term -->
   {% if active_year %}
   <div class="mt-4 alert alert-info text-center">
-    <strong>Active Year:</strong> {{ active_year.year }} | 
+    <strong>Active Year:</strong> {{ active_year.year }} |
     <strong>Term:</strong> {{ active_year.current_term or "Not Set" }}
+    {% if active_year.is_locked %}
+      <span class="ms-2 badge bg-secondary">Locked</span>
+    {% endif %}
   </div>
   {% endif %}
 

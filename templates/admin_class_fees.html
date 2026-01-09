@@ -3,6 +3,13 @@
 <div class="container mt-4">
   <h4 class="text-primary mb-3">Manage Class Fees (Per Year/Term/Group)</h4>
 
+  {% if year_locked %}
+    <div class="alert alert-warning">
+      <strong>Locked:</strong> Academic year {{ default_year }} is locked. You can view settings but cannot edit/delete.
+      <a class="ms-2" href="{{ url_for('academic_years') }}">Manage locks</a>
+    </div>
+  {% endif %}
+
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
       {% for category, message in messages %}
@@ -26,12 +33,12 @@
     <div class="col-md-2">
       <label class="form-label">Year <span class="text-danger">*</span></label>
       <input type="number" name="year" id="fee_year" class="form-control"
-             value="{{ default_year or '' }}" required>
+             value="{{ default_year or '' }}" required {% if year_locked %}disabled{% endif %}>
     </div>
 
     <div class="col-md-2">
       <label class="form-label">Term <span class="text-danger">*</span></label>
-      <select name="term_no" id="fee_term_no" class="form-select" required>
+      <select name="term_no" id="fee_term_no" class="form-select" required {% if year_locked %}disabled{% endif %}>
         <option value="">-- Select --</option>
         {% for n, lbl in _terms %}
           <option value="{{ n }}" {{ 'selected' if (default_term_no|string)==(n|string) else '' }}>{{ lbl }}</option>
@@ -41,9 +48,9 @@
 
     <div class="col-md-2">
       <label class="form-label">Fee Group <span class="text-danger">*</span></label>
-      <select name="fee_group" id="fee_group" class="form-select" required>
+      <select name="fee_group" id="fee_group" class="form-select" required {% if year_locked %}disabled{% endif %}>
         {% for g in _groups %}
-          <option value="{{ g }}" {{ 'selected' if (default_fee_group or 'Old')==g else '' }}>{{ g }}</option>
+          <option value="{{ g }}" {{ 'selected' if default_fee_group==g else '' }}>{{ g }}</option>
         {% endfor %}
       </select>
       <div class="small text-muted">New = students joining this year</div>
@@ -51,7 +58,7 @@
 
     <div class="col-md-2">
       <label class="form-label">Class <span class="text-danger">*</span></label>
-      <select name="class_name" id="fee_class_name" class="form-select" required>
+      <select name="class_name" id="fee_class_name" class="form-select" required {% if year_locked %}disabled{% endif %}>
         <option value="">-- Select --</option>
         {% for c in _classes %}
           <option value="{{ c }}">{{ c }}</option>
@@ -61,7 +68,7 @@
 
     <div class="col-md-2">
       <label class="form-label">Section <span class="text-danger">*</span></label>
-      <select name="section" id="fee_section" class="form-select" required>
+      <select name="section" id="fee_section" class="form-select" required {% if year_locked %}disabled{% endif %}>
         <option value="">-- Select --</option>
         {% for s in _sections %}
           <option value="{{ s }}">{{ s }}</option>
@@ -71,18 +78,18 @@
 
     <div class="col-md-2">
       <label class="form-label">Amount (UGX) <span class="text-danger">*</span></label>
-      <input type="number" step="0.01" name="amount" id="fee_amount" class="form-control" required>
+      <input type="number" step="0.01" name="amount" id="fee_amount" class="form-control" required {% if year_locked %}disabled{% endif %}>
     </div>
 
     <div class="col-md-6">
       <label class="form-label">Level (optional)</label>
       <input type="text" name="level" id="fee_level" class="form-control"
-             placeholder="Nursery / Primary / Secondary">
+             placeholder="Nursery / Primary / Secondary" {% if year_locked %}disabled{% endif %}>
     </div>
 
     <div class="col-12 text-end">
-      <button type="submit" class="btn btn-primary">Save Fee</button>
-      <button type="button" class="btn btn-outline-secondary" onclick="resetFeeForm()">Clear</button>
+      <button type="submit" class="btn btn-primary" {% if year_locked %}disabled{% endif %}>Save Fee</button>
+      <button type="button" class="btn btn-outline-secondary" onclick="resetFeeForm()" {% if year_locked %}disabled{% endif %}>Clear</button>
       <a class="btn btn-primary" href="{{ url_for('bursaries') }}">Manage Bursaries</a>
       <a class="btn btn-primary" href="{{ url_for('admin_requirements') }}">Manage Requirements</a>
       <a class="btn btn-primary" href="{{ url_for('dashboard') }}">← Back</a>
@@ -93,13 +100,12 @@
   <form method="get" class="row g-2 mb-3">
     <div class="col-md-3">
       <label class="form-label">Year</label>
-      <input type="number" name="year" class="form-control" value="{{ q_year or default_year or '' }}">
+      <input type="number" name="year" class="form-control" value="{{ q_year or '' }}">
     </div>
 
     <div class="col-md-3">
       <label class="form-label">Term</label>
       <select name="term_no" class="form-select">
-        <option value="">All</option>
         {% for n, lbl in _terms %}
           <option value="{{ n }}" {{ 'selected' if (q_term_no|string)==(n|string) else '' }}>{{ lbl }}</option>
         {% endfor %}
@@ -109,9 +115,8 @@
     <div class="col-md-3">
       <label class="form-label">Fee Group</label>
       <select name="fee_group" class="form-select">
-        <option value="">All</option>
         {% for g in _groups %}
-          <option value="{{ g }}" {{ 'selected' if q_group==g else '' }}>{{ g }}</option>
+          <option value="{{ g }}" {{ 'selected' if q_fee_group==g else '' }}>{{ g }}</option>
         {% endfor %}
       </select>
     </div>
@@ -150,6 +155,7 @@
           <td>{{ "{:,.0f}".format(f.amount or 0) }}</td>
           <td class="text-nowrap">
             <button class="btn btn-sm btn-outline-primary"
+              {% if year_locked %}disabled{% endif %}
               onclick="fillFeeEdit(
                 {{ f.id }},
                 '{{ f.class_name }}',
@@ -165,7 +171,7 @@
                   action="{{ url_for('delete_class_fee', fee_id=f.id) }}"
                   onsubmit="return confirm('Delete this fee?');"
                   class="d-inline">
-              <button class="btn btn-sm btn-outline-danger">Delete</button>
+              <button class="btn btn-sm btn-outline-danger" {% if year_locked %}disabled{% endif %}>Delete</button>
             </form>
           </td>
         </tr>
@@ -196,7 +202,6 @@ function resetFeeForm() {
   document.getElementById('fee_section').value = '';
   document.getElementById('fee_level').value = '';
   document.getElementById('fee_amount').value = '';
-  // keep year/term/group as user may be working within a period
 }
 </script>
 {% endblock %}

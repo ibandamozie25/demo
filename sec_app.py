@@ -4292,11 +4292,37 @@ def _class_options():
 def _term_no(t: str) -> int | None:
     t = (t or "").strip().lower()
     return 1 if t == "term 1" else 2 if t == "term 2" else 3 if t == "term 3" else None
-    
-def term_to_no(term: str | None):
-    if not term:
+
+   
+
+def term_to_no(term_label: str | None) -> int | None:
+    if not term_label:
         return None
-    return TERM2NO.get(term.strip().lower())
+    t = term_label.strip().lower()
+    return {"term 1": 1, "term 2": 2, "term 3": 3}.get(t)
+
+def term_no_to_label(n: int | None) -> str | None:
+    if not n:
+        return None
+    return {1: "Term 1", 2: "Term 2", 3: "Term 3"}.get(int(n))
+    
+def get_active_year_term():
+    ay = get_active_academic_year() or {}
+    active_year = int(ay.get("year") or ay.get("active_year") or datetime.now().year)
+    active_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
+    active_term_no = {"term 1": 1, "term 2": 2, "term 3": 3}.get(active_term.lower(), 1)
+    return active_year, active_term, active_term_no
+    
+def is_academic_year_locked(year: int) -> bool:
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT is_locked FROM academic_years WHERE year=%s LIMIT 1", (int(year),))
+        row = cur.fetchone() or {}
+        cur.close()
+        return bool(row.get("is_locked", 0))
+    finally:
+        conn.close()
 
 def call_proc(sql: str, params: tuple | None = None):
     """Safe CALL wrapper for mysql-connector (buffered cursor, no next_result needed)."""
@@ -13641,44 +13667,126 @@ def midterm_report_print_batch():
 @require_role('admin')
 def academic_years():
     conn = get_db_connection()
-    if request.method == 'POST':
-        if 'add' in request.form:
-            year = request.form['year']
-            try:
+    try:
+        if request.method == 'POST':
+
+            # Add year
+            if 'add' in request.form:
+                year_raw = (request.form.get('year') or '').strip()
+                try:
+                    y = int(year_raw)
+                except Exception:
+                    flash("Year must be a number (e.g., 2026).", "warning")
+                    return redirect(url_for('academic_years'))
+
+                try:
+                    cur = conn.cursor(dictionary=True)
+                    cur.execute("INSERT INTO academic_years (year) VALUES (%s)", (y,))
+                    conn.commit()
+                    cur.close()
+                    flash("Academic year added.", "success")
+                except Exception:
+                    conn.rollback()
+                    flash("Year already exists", "warning")
+
+            # Activate year (prevent activating locked year)
+            elif 'activate' in request.form:
+                year_raw = (request.form.get('year') or '').strip()
+                try:
+                    y = int(year_raw)
+                except Exception:
+                    flash("Invalid year.", "warning")
+                    return redirect(url_for('academic_years'))
+
                 cur = conn.cursor(dictionary=True)
-                cur.execute(
-                    "INSERT INTO academic_years (year) VALUES (%s)", (year,))
+                cur.execute("SELECT is_locked FROM academic_years WHERE year=%s LIMIT 1", (y,))
+                row = cur.fetchone() or {}
+                cur.close()
+
+                if int(row.get("is_locked", 0)) == 1:
+                    flash(f"Year {y} is locked. Unlock it before activating.", "warning")
+                    return redirect(url_for('academic_years'))
+
+                cur = conn.cursor(dictionary=True)
+                cur.execute("UPDATE academic_years SET is_active=0")
+                cur.execute("UPDATE academic_years SET is_active=1 WHERE year=%s", (y,))
                 conn.commit()
                 cur.close()
-            except Exception:
-                flash("Year already exists", "warning")
-        elif 'activate' in request.form:
-            cur = conn.cursor(dictionary=True)
-            selected_year = request.form['year']
-            cur.execute("UPDATE academic_years SET is_active = 0")
-            cur.execute(
-                "UPDATE academic_years SET is_active = 1 WHERE year = %s", (selected_year,))
-            conn.commit()
-            cur.close()
-        elif 'set_term' in request.form:
-            cur = conn.cursor(dictionary=True)
-            term = request.form['term']
-            cur.execute(
-                "UPDATE academic_years SET current_term = %s WHERE is_active = 1", (term,))
-            conn.commit()
-            cur.close()
+                flash(f"Year {y} activated.", "success")
 
-    cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT * FROM academic_years")
-    years = cur.fetchall()
+            # Set term for active year (block if active year locked)
+            elif 'set_term' in request.form:
+                term = (request.form.get('term') or '').strip()
+                if term not in TERMS:
+                    flash("Invalid term.", "warning")
+                    return redirect(url_for('academic_years'))
 
-    cur.execute(
-        "SELECT year, current_term FROM academic_years WHERE is_active = 1")
-    active_year = cur.fetchone()
-    cur.close()
-    conn.close()
+                cur = conn.cursor(dictionary=True)
+                cur.execute("SELECT year, is_locked FROM academic_years WHERE is_active=1 LIMIT 1")
+                active = cur.fetchone() or {}
+                cur.close()
 
-    return render_template('academic_years.html', years=years, active_year=active_year)
+                if int(active.get("is_locked", 0)) == 1:
+                    flash(f"Active year {active.get('year')} is locked. Unlock to change term.", "warning")
+                    return redirect(url_for('academic_years'))
+
+                cur = conn.cursor(dictionary=True)
+                cur.execute("UPDATE academic_years SET current_term=%s WHERE is_active=1", (term,))
+                conn.commit()
+                cur.close()
+                flash("Term updated.", "success")
+
+            # Lock year (do not lock active year)
+            elif 'lock' in request.form:
+                year_raw = (request.form.get('year') or '').strip()
+                try:
+                    y = int(year_raw)
+                except Exception:
+                    flash("Invalid year.", "warning")
+                    return redirect(url_for('academic_years'))
+
+                cur = conn.cursor(dictionary=True)
+                cur.execute("SELECT is_active FROM academic_years WHERE year=%s LIMIT 1", (y,))
+                row = cur.fetchone() or {}
+                cur.close()
+
+                if int(row.get("is_active", 0)) == 1:
+                    flash("You cannot lock the active year.", "warning")
+                    return redirect(url_for('academic_years'))
+
+                cur = conn.cursor(dictionary=True)
+                cur.execute("UPDATE academic_years SET is_locked=1, locked_on=NOW() WHERE year=%s", (y,))
+                conn.commit()
+                cur.close()
+                flash(f"Year {y} locked.", "success")
+
+            # Unlock year
+            elif 'unlock' in request.form:
+                year_raw = (request.form.get('year') or '').strip()
+                try:
+                    y = int(year_raw)
+                except Exception:
+                    flash("Invalid year.", "warning")
+                    return redirect(url_for('academic_years'))
+
+                cur = conn.cursor(dictionary=True)
+                cur.execute("UPDATE academic_years SET is_locked=0, locked_on=NULL WHERE year=%s", (y,))
+                conn.commit()
+                cur.close()
+                flash(f"Year {y} unlocked.", "success")
+
+        # Load table
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM academic_years ORDER BY year DESC")
+        years = cur.fetchall() or []
+        cur.execute("SELECT year, current_term, is_locked FROM academic_years WHERE is_active=1 LIMIT 1")
+        active_year = cur.fetchone()
+        cur.close()
+
+        return render_template('academic_years.html', years=years, active_year=active_year)
+
+    finally:
+        conn.close()
 
 
 @app.route('/fees/setup', methods=['POST'])
@@ -17036,17 +17144,9 @@ def admin_requirements():
     ensure_requirements_schema(conn)
 
     fee_groups = ["Old", "New"]
+    active_year, active_term, active_term_no = get_active_year_term()
 
-    # Defaults from active academic year/term
-    ay = get_active_academic_year() or {}
-    active_year = int(ay.get("year") or ay.get("active_year") or datetime.now().year)
-    active_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
-    active_term_no = {"term 1": 1, "term 2": 2, "term 3": 3}.get(active_term.lower(), 1)
-
-    def term_no_to_label(n):
-        return {1: "Term 1", 2: "Term 2", 3: "Term 3"}.get(int(n or 0), None)
-
-    # ---------------- POST: create/update ----------------
+    # ---------- POST ----------
     if request.method == "POST":
         f = request.form
         rid = (f.get("id") or "").strip()
@@ -17060,8 +17160,8 @@ def admin_requirements():
         year_raw = (f.get("year") or "").strip()
         term_no_raw = (f.get("term_no") or "").strip()
         fee_group = (f.get("fee_group") or "Old").strip() or "Old"
+        section = (f.get("section") or "").strip() or None
 
-        # qty/amount
         try:
             qty = int(qty_raw)
         except Exception:
@@ -17071,39 +17171,37 @@ def admin_requirements():
         except Exception:
             amount = 0.0
 
-        # defaults
         try:
             year_val = int(year_raw or active_year)
         except Exception:
             year_val = active_year
 
         try:
-            term_no = int(term_no_raw or active_term_no)
+            term_no = int(term_no_raw) if term_no_raw else None
         except Exception:
-            term_no = active_term_no
-        if term_no not in (1, 2, 3):
-            term_no = active_term_no
+            term_no = None
 
         if fee_group not in fee_groups:
             fee_group = "Old"
 
-        # Keep "All/Generic" option: allow None term (=> term_no NULL)
-        raw_term_mode = (f.get("term_mode") or "").strip().lower()  # optional helper from UI
-        if raw_term_mode == "all":
-            term_label = None
-        else:
-            # if your UI sends term directly, allow it; else convert term_no to label
-            term_label = (f.get("term") or "").strip() or term_no_to_label(term_no)
+        # term_label stored in requirements.term (generated term_no depends on this)
+        term_label = term_no_to_label(term_no) if term_no else None
 
         if not class_name or not name:
             conn.close()
             flash("Class and item name are required.", "warning")
             return redirect(url_for("admin_requirements"))
 
+        # LOCK CHECK
+        if is_academic_year_locked(year_val):
+            conn.close()
+            flash(f"Year {year_val} is locked. You cannot change requirements for a locked year.", "warning")
+            return redirect(url_for("admin_requirements", year=year_val, fee_group=fee_group))
+
         cur = conn.cursor(dictionary=True)
         try:
-            # If editing, keep old pointers to recompute both sides if moved
             old_class = old_term_no = old_year = old_group = None
+
             if rid:
                 cur.execute("""
                     SELECT class_name, year, term_no, fee_group
@@ -17111,11 +17209,10 @@ def admin_requirements():
                 """, (rid,))
                 old = cur.fetchone() or {}
                 old_class = (old.get("class_name") or "").strip()
-                old_year = old.get("year")
-                old_term_no = old.get("term_no")
+                old_year = int(old.get("year") or 0)
+                old_term_no = old.get("term_no")  # can be NULL
                 old_group = (old.get("fee_group") or "").strip()
 
-                # update row (keep logic)
                 cur.execute("""
                     UPDATE requirements
                        SET class_name=%s,
@@ -17124,12 +17221,12 @@ def admin_requirements():
                            amount=%s,
                            term=%s,
                            year=%s,
-                           fee_group=%s
+                           fee_group=%s,
+                           section=%s
                      WHERE id=%s
-                """, (class_name, name, qty, amount, term_label, year_val, fee_group, rid))
+                """, (class_name, name, qty, amount, term_label, year_val, fee_group, section, rid))
             else:
-                # ---- MANUAL UPSERT by (class, name, year, term_no, fee_group) ----
-                # term_no is generated, so match by term label and year/group too
+                # Manual upsert by (class, name, year, term_no, fee_group)
                 cur.execute("""
                     SELECT id
                     FROM requirements
@@ -17138,41 +17235,44 @@ def admin_requirements():
                       AND year=%s
                       AND fee_group=%s
                       AND (
-                          (term_no IS NULL AND %s IS NULL)
-                          OR (term_no = %s)
+                           (term_no IS NULL AND %s IS NULL)
+                           OR (term_no = %s)
                       )
                     LIMIT 1
-                """, (class_name, name, year_val, fee_group, term_label, term_no))
+                """, (class_name, name, year_val, fee_group, term_no, term_no))
                 existing = cur.fetchone()
 
                 if existing:
                     cur.execute("""
                         UPDATE requirements
-                           SET qty=%s, amount=%s, term=%s
+                           SET qty=%s,
+                               amount=%s,
+                               term=%s,
+                               section=%s
                          WHERE id=%s
-                    """, (qty, amount, term_label, existing["id"]))
+                    """, (qty, amount, term_label, section, existing["id"]))
                 else:
                     cur.execute("""
-                        INSERT INTO requirements (class_name, name, qty, amount, term, year, fee_group)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s)
-                    """, (class_name, name, qty, amount, term_label, year_val, fee_group))
+                        INSERT INTO requirements (class_name, name, qty, amount, term, year, fee_group, section)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (class_name, name, qty, amount, term_label, year_val, fee_group, section))
 
             conn.commit()
             flash("Requirement saved.", "success")
 
-            # 🔁 Recompute NEW side (your existing logic)
-            _recompute_class(class_name, term_no if term_label else None)
+            # recompute new side
+            _recompute_class(class_name, term_no)
 
-            # 🔁 Recompute OLD side if record moved
+            # recompute old side if moved (only if editing)
             if rid and old_class:
                 moved = (
                     old_class != class_name
-                    or int(old_year or 0) != int(year_val)
-                    or (int(old_term_no or 0) != int(term_no) if term_label else old_term_no is not None)
+                    or old_year != int(year_val)
+                    or (old_term_no != term_no)  # both can be None
                     or (old_group != fee_group)
                 )
                 if moved:
-                    _recompute_class(old_class, int(old_term_no) if old_term_no else None)
+                    _recompute_class(old_class, old_term_no)
 
         except mysql.connector.Error as e:
             conn.rollback()
@@ -17184,9 +17284,9 @@ def admin_requirements():
             cur.close()
             conn.close()
 
-        return redirect(url_for("admin_requirements", year=year_val, term_no=term_no, fee_group=fee_group))
+        return redirect(url_for("admin_requirements", year=year_val, term_no=(term_no or ""), fee_group=fee_group, class_name=class_name))
 
-    # ---------------- GET: list + filters ----------------
+    # ---------- GET ----------
     q_class = (request.args.get("class_name") or "").strip()
     q_year = (request.args.get("year") or "").strip()
     q_term_no = (request.args.get("term_no") or "").strip()
@@ -17197,33 +17297,34 @@ def admin_requirements():
     except Exception:
         year_filter = active_year
 
+    # term filter is optional; if empty, show all (including generic)
     try:
-        term_no_filter = int(q_term_no) if q_term_no else active_term_no
+        term_no_filter = int(q_term_no) if q_term_no else None
     except Exception:
-        term_no_filter = active_term_no
+        term_no_filter = None
+    if term_no_filter not in (None, 1, 2, 3):
+        term_no_filter = None
 
     group_filter = q_group if q_group in fee_groups else "Old"
+    locked = is_academic_year_locked(year_filter)
 
-    where = ["1=1"]
-    params = []
+    where = ["year=%s", "fee_group=%s"]
+    params = [year_filter, group_filter]
 
     if q_class:
         where.append("class_name=%s")
         params.append(q_class)
 
-    where.append("year=%s")
-    params.append(year_filter)
-
-    where.append("fee_group=%s")
-    params.append(group_filter)
-
-    # allow filter by term_no (optional)
-    where.append("(term_no=%s OR term_no IS NULL)")
-    params.append(term_no_filter)
+    if term_no_filter is None:
+        # show all terms + generic
+        pass
+    else:
+        where.append("(term_no=%s OR term_no IS NULL)")
+        params.append(term_no_filter)
 
     cur = conn.cursor(dictionary=True)
     cur.execute(f"""
-        SELECT id, class_name, name, qty, amount, term, year, term_no, fee_group
+        SELECT id, class_name, name, qty, amount, term, year, term_no, fee_group, section
           FROM requirements
          WHERE {' AND '.join(where)}
          ORDER BY class_name, COALESCE(term,''), name
@@ -17231,7 +17332,6 @@ def admin_requirements():
     rows = cur.fetchall() or []
     cur.close()
 
-    # dropdown values
     cur = conn.cursor(dictionary=True)
     cur.execute("SELECT DISTINCT class_name FROM classes ORDER BY 1")
     classes = [r["class_name"] for r in (cur.fetchall() or [])]
@@ -17245,16 +17345,24 @@ def admin_requirements():
         terms=TERMS,
         fee_groups=fee_groups,
 
-        # defaults for UI
         default_year=year_filter,
-        default_term_no=term_no_filter,
+        default_term_no=(term_no_filter or ""),
         default_fee_group=group_filter,
 
         q_class=q_class,
         q_year=str(year_filter),
-        q_term_no=str(term_no_filter),
-        q_group=group_filter,
+        q_term_no=str(term_no_filter or ""),
+        q_fee_group=group_filter,
+
+        year_locked=locked,
+        active_year=active_year,
+        active_term_no=active_term_no
     )
+
+
+
+
+
 
 @app.route("/admin/requirements/<int:rid>/delete", methods=["POST"])
 @require_role("admin", "bursar", "headteacher")
@@ -17262,29 +17370,39 @@ def admin_requirements_delete(rid):
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
     try:
-        # Read the row BEFORE delete so we know what to recompute
-        cur.execute("SELECT class_name, term FROM requirements WHERE id=%s", (rid,))
-        row = cur.fetchone()
-        cls = (row or {}).get("class_name")
-        tlabel = (row or {}).get("term")
+        cur.execute("""
+            SELECT class_name, year, term_no, fee_group
+            FROM requirements WHERE id=%s
+        """, (rid,))
+        row = cur.fetchone() or {}
+        cls = row.get("class_name")
+        y = int(row.get("year") or 0)
+        tno = row.get("term_no")  # can be None
+        grp = (row.get("fee_group") or "Old")
+
+        if y and is_academic_year_locked(y):
+            flash(f"Year {y} is locked. Cannot delete requirements.", "warning")
+            return redirect(url_for("admin_requirements", year=y, term_no=(tno or ""), fee_group=grp, class_name=cls))
 
         cur.execute("DELETE FROM requirements WHERE id=%s", (rid,))
         conn.commit()
-        cur.close()
 
-        # 🔁 recompute the affected class/term (or all terms if global)
         if cls:
-            _recompute_class(cls, term_to_no(tlabel))
+            _recompute_class(cls, tno)
 
         flash("Requirement deleted.", "success")
+        return redirect(url_for("admin_requirements", year=y, term_no=(tno or ""), fee_group=grp, class_name=cls))
+
     except Exception as e:
         conn.rollback()
         flash(f"Delete failed: {e}", "danger")
+        return redirect(url_for("admin_requirements"))
     finally:
-        try: cur.close()
-        except: pass
+        try:
+            cur.close()
+        except Exception:
+            pass
         conn.close()
-    return redirect(url_for("admin_requirements"))
 
 # ===================== PROMOTIONS: HISTORY + UNDO + BATCH =====================
 
@@ -17924,12 +18042,9 @@ def admin_class_fees():
         section_options = ["Day", "Boarding"]
         fee_groups = ["Old", "New"]
 
-        # Defaults from active academic year/term
-        ay = get_active_academic_year() or {}
-        active_year = int(ay.get("year") or ay.get("active_year") or datetime.now().year)
-        active_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
-        active_term_no = {"term 1": 1, "term 2": 2, "term 3": 3}.get(active_term.lower(), 1)
+        active_year, active_term, active_term_no = get_active_year_term()
 
+        # ---------- POST ----------
         if request.method == "POST":
             f = request.form
 
@@ -17938,21 +18053,19 @@ def admin_class_fees():
             raw_level = (f.get("level") or "").strip() or None
             raw_amount = (f.get("amount") or "").strip()
 
-            # New inputs
             year_raw = (f.get("year") or "").strip()
             term_no_raw = (f.get("term_no") or "").strip()
             fee_group = (f.get("fee_group") or "Old").strip() or "Old"
 
             class_name = norm_class(raw_class) or (raw_class or "").title()
-            section = norm_section(raw_section)  # Day/Boarding
+            section = norm_section(raw_section)
             level = raw_level
 
             try:
                 amount = float(raw_amount)
-            except ValueError:
+            except Exception:
                 amount = None
 
-            # year/term_no defaults
             try:
                 year_val = int(year_raw or active_year)
             except Exception:
@@ -17962,20 +18075,24 @@ def admin_class_fees():
                 term_no = int(term_no_raw or active_term_no)
             except Exception:
                 term_no = active_term_no
-
             if term_no not in (1, 2, 3):
                 term_no = active_term_no
 
             if fee_group not in fee_groups:
                 fee_group = "Old"
 
+            # LOCK CHECK
+            if is_academic_year_locked(year_val):
+                flash(f"Year {year_val} is locked. You cannot change fees for a locked year.", "warning")
+                return redirect(url_for("admin_class_fees", year=year_val, term_no=term_no, fee_group=fee_group))
+
             if not class_name or not section or amount is None:
                 flash("Please provide Class, Section, Amount, Year, Term, and Fee Group.", "warning")
-                return redirect(url_for("admin_class_fees"))
+                return redirect(url_for("admin_class_fees", year=year_val, term_no=term_no, fee_group=fee_group))
 
             cur = conn.cursor(dictionary=True)
             try:
-                # ---- MANUAL UPSERT (prevents overwrite across years/terms/groups) ----
+                # Manual upsert by (class,section,year,term_no,group)
                 cur.execute("""
                     SELECT id
                     FROM class_fees
@@ -17999,7 +18116,7 @@ def admin_class_fees():
                 conn.commit()
                 flash("Class fee saved.", "success")
 
-                # 🔁 Recompute class for that term (keep your existing logic)
+                # recompute affected class/term only
                 _recompute_class(class_name, term_no)
 
             except mysql.connector.Error as e:
@@ -18010,7 +18127,7 @@ def admin_class_fees():
 
             return redirect(url_for("admin_class_fees", year=year_val, term_no=term_no, fee_group=fee_group))
 
-        # ---------------- GET: list + filters ----------------
+        # ---------- GET ----------
         q_year = (request.args.get("year") or "").strip()
         q_term_no = (request.args.get("term_no") or "").strip()
         q_group = (request.args.get("fee_group") or "").strip()
@@ -18024,8 +18141,12 @@ def admin_class_fees():
             term_no_filter = int(q_term_no) if q_term_no else active_term_no
         except Exception:
             term_no_filter = active_term_no
+        if term_no_filter not in (1, 2, 3):
+            term_no_filter = active_term_no
 
         fee_group_filter = q_group if q_group in fee_groups else "Old"
+
+        locked = is_academic_year_locked(year_filter)
 
         cur = conn.cursor(dictionary=True)
         cur.execute("""
@@ -18038,8 +18159,7 @@ def admin_class_fees():
                 WHEN 'P1' THEN 3 WHEN 'P2' THEN 4 WHEN 'P3' THEN 5
                 WHEN 'P4' THEN 6 WHEN 'P5' THEN 7 WHEN 'P6' THEN 8 WHEN 'P7' THEN 9
                 ELSE 99
-              END,
-              section
+              END, section
         """, (year_filter, term_no_filter, fee_group_filter))
         fees = cur.fetchall() or []
         cur.close()
@@ -18049,19 +18169,27 @@ def admin_class_fees():
             class_options=class_options,
             section_options=section_options,
             fee_groups=fee_groups,
-
             fees=fees,
 
-            # defaults for form + filter UI
             default_year=year_filter,
             default_term_no=term_no_filter,
             default_fee_group=fee_group_filter,
 
+            q_year=str(year_filter),
+            q_term_no=str(term_no_filter),
+            q_fee_group=fee_group_filter,
+
+            year_locked=locked,
             active_year=active_year,
             active_term_no=active_term_no
         )
     finally:
         conn.close()
+
+
+
+
+
 
 
 @app.route("/admin/class_fees/<int:fee_id>/delete", methods=["POST"])
@@ -18070,26 +18198,37 @@ def delete_class_fee(fee_id):
     conn = get_db_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        # Fetch before delete so we know which class to refresh
-        cur.execute("SELECT class_name FROM class_fees WHERE id=%s", (fee_id,))
-        row = cur.fetchone()
-        cls = (row or {}).get("class_name")
+        cur.execute("SELECT class_name, year, term_no, fee_group FROM class_fees WHERE id=%s", (fee_id,))
+        row = cur.fetchone() or {}
+        cls = row.get("class_name")
+        y = int(row.get("year") or 0)
+        tno = int(row.get("term_no") or 1)
+        grp = (row.get("fee_group") or "Old")
+
+        if y and is_academic_year_locked(y):
+            flash(f"Year {y} is locked. Cannot delete fees.", "warning")
+            return redirect(url_for("admin_class_fees", year=y, term_no=tno, fee_group=grp))
 
         cur.execute("DELETE FROM class_fees WHERE id=%s", (fee_id,))
         conn.commit()
         cur.close()
 
         if cls:
-            # 🔁 Recompute whole class (all terms)
-            _recompute_class(cls, None)
+            _recompute_class(cls, tno)
 
         flash("Fee deleted.", "success")
+        return redirect(url_for("admin_class_fees", year=y, term_no=tno, fee_group=grp))
+
     except Exception as e:
         conn.rollback()
         flash(f"Failed to delete: {e}", "danger")
+        return redirect(url_for("admin_class_fees"))
     finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
         conn.close()
-    return redirect(url_for("admin_class_fees"))
 
 
 # ---- Bursaries: list/add/export/import/edit/delete ----

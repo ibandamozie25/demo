@@ -6,6 +6,13 @@
     <h4 class="text-primary m-0">Manage Requirements (Per Year/Term/Group)</h4>
   </div>
 
+  {% if year_locked %}
+    <div class="alert alert-warning">
+      <strong>Locked:</strong> Academic year {{ default_year }} is locked. You can view settings but cannot edit/delete.
+      <a class="ms-2" href="{{ url_for('academic_years') }}">Manage locks</a>
+    </div>
+  {% endif %}
+
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
       {% for category, message in messages %}
@@ -21,20 +28,19 @@
   {% set _groups = fee_groups or ['Old','New'] %}
 
   <!-- Add / Edit form -->
-  <form method="post" class="border rounded p-3 shadow-sm bg-light mb-3" onsubmit="syncTermMode()">
+  <form method="post" class="border rounded p-3 shadow-sm bg-light mb-3">
     <input type="hidden" name="id" id="req_id">
-    <input type="hidden" name="term_mode" id="req_term_mode" value="">
 
     <div class="row g-3">
       <div class="col-md-2">
         <label class="form-label">Year <span class="text-danger">*</span></label>
         <input type="number" name="year" id="req_year" class="form-control"
-               value="{{ default_year or '' }}" required>
+               value="{{ default_year or '' }}" required {% if year_locked %}disabled{% endif %}>
       </div>
 
       <div class="col-md-2">
         <label class="form-label">Term</label>
-        <select name="term_no" id="req_term_no" class="form-select" onchange="syncTermMode()">
+        <select name="term_no" id="req_term_no" class="form-select" {% if year_locked %}disabled{% endif %}>
           <option value="">All/Generic</option>
           {% for n, lbl in _terms %}
             <option value="{{ n }}" {{ 'selected' if (default_term_no|string)==(n|string) else '' }}>{{ lbl }}</option>
@@ -45,16 +51,16 @@
 
       <div class="col-md-2">
         <label class="form-label">Fee Group <span class="text-danger">*</span></label>
-        <select name="fee_group" id="req_fee_group" class="form-select" required>
+        <select name="fee_group" id="req_fee_group" class="form-select" required {% if year_locked %}disabled{% endif %}>
           {% for g in _groups %}
-            <option value="{{ g }}" {{ 'selected' if (default_fee_group or 'Old')==g else '' }}>{{ g }}</option>
+            <option value="{{ g }}" {{ 'selected' if default_fee_group==g else '' }}>{{ g }}</option>
           {% endfor %}
         </select>
       </div>
 
       <div class="col-md-2">
         <label class="form-label">Class *</label>
-        <select name="class_name" id="req_class_name" class="form-select" required>
+        <select name="class_name" id="req_class_name" class="form-select" required {% if year_locked %}disabled{% endif %}>
           <option value="">-- Select --</option>
           {% for c in classes %}
             <option value="{{ c }}">{{ c }}</option>
@@ -64,7 +70,7 @@
 
       <div class="col-md-2">
         <label class="form-label">Section (optional)</label>
-        <select name="section" id="req_section" class="form-select">
+        <select name="section" id="req_section" class="form-select" {% if year_locked %}disabled{% endif %}>
           <option value="">All</option>
           <option value="Day">Day</option>
           <option value="Boarding">Boarding</option>
@@ -73,22 +79,22 @@
 
       <div class="col-md-2">
         <label class="form-label">Qty</label>
-        <input type="number" name="qty" id="req_qty" class="form-control" value="1" min="1">
+        <input type="number" name="qty" id="req_qty" class="form-control" value="1" min="1" {% if year_locked %}disabled{% endif %}>
       </div>
 
       <div class="col-md-6">
         <label class="form-label">Item Name *</label>
-        <input name="name" id="req_name" class="form-control" required>
+        <input name="name" id="req_name" class="form-control" required {% if year_locked %}disabled{% endif %}>
       </div>
 
       <div class="col-md-3">
         <label class="form-label">Amount (UGX)</label>
-        <input type="number" step="0.01" name="amount" id="req_amount" class="form-control" required>
+        <input type="number" step="0.01" name="amount" id="req_amount" class="form-control" required {% if year_locked %}disabled{% endif %}>
       </div>
 
       <div class="col-12 text-end">
-        <button class="btn btn-primary">Save</button>
-        <button type="button" class="btn btn-outline-secondary" onclick="resetReqForm()">Clear</button>
+        <button class="btn btn-primary" {% if year_locked %}disabled{% endif %}>Save</button>
+        <button type="button" class="btn btn-outline-secondary" onclick="resetReqForm()" {% if year_locked %}disabled{% endif %}>Clear</button>
         <a class="btn btn-primary" href="{{ url_for('admin_class_fees') }}">← Back</a>
       </div>
     </div>
@@ -98,7 +104,7 @@
   <form method="get" class="row g-2 mb-3">
     <div class="col-md-3">
       <label class="form-label">Year</label>
-      <input type="number" name="year" class="form-control" value="{{ q_year or default_year or '' }}">
+      <input type="number" name="year" class="form-control" value="{{ q_year or '' }}">
     </div>
 
     <div class="col-md-3">
@@ -124,9 +130,8 @@
     <div class="col-md-3">
       <label class="form-label">Fee Group</label>
       <select name="fee_group" class="form-select">
-        <option value="">All</option>
         {% for g in _groups %}
-          <option value="{{ g }}" {{ 'selected' if q_group==g else '' }}>{{ g }}</option>
+          <option value="{{ g }}" {{ 'selected' if q_fee_group==g else '' }}>{{ g }}</option>
         {% endfor %}
       </select>
     </div>
@@ -167,6 +172,7 @@
           <td>{{ "{:,.0f}".format(r.amount or 0) }}</td>
           <td class="text-nowrap">
             <button class="btn btn-sm btn-outline-primary"
+              {% if year_locked %}disabled{% endif %}
               onclick="fillReqEdit(
                 {{ r.id }},
                 {{ r.year or 0 }},
@@ -181,7 +187,7 @@
 
             <form method="post" action="{{ url_for('admin_requirements_delete', rid=r.id) }}"
                   class="d-inline" onsubmit="return confirm('Delete this requirement?');">
-              <button class="btn btn-sm btn-outline-danger">Delete</button>
+              <button class="btn btn-sm btn-outline-danger" {% if year_locked %}disabled{% endif %}>Delete</button>
             </form>
           </td>
         </tr>
@@ -194,12 +200,6 @@
 </div>
 
 <script>
-function syncTermMode() {
-  const termNo = document.getElementById('req_term_no').value;
-  // if term is blank -> generic/all terms
-  document.getElementById('req_term_mode').value = (termNo === '' ? 'all' : '');
-}
-
 function fillReqEdit(id, year, termNo, feeGroup, cls, section, name, qty, amount) {
   document.getElementById('req_id').value = id;
   document.getElementById('req_year').value = year || '';
@@ -210,8 +210,6 @@ function fillReqEdit(id, year, termNo, feeGroup, cls, section, name, qty, amount
   document.getElementById('req_name').value = name || '';
   document.getElementById('req_qty').value = qty || 1;
   document.getElementById('req_amount').value = amount || 0;
-
-  syncTermMode();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -220,11 +218,6 @@ function resetReqForm() {
   document.getElementById('req_name').value = '';
   document.getElementById('req_qty').value = 1;
   document.getElementById('req_amount').value = '';
-  // keep year/term/group/class as user may be working within a period
-  syncTermMode();
 }
-
-// set initial state
-syncTermMode();
 </script>
 {% endblock %}
