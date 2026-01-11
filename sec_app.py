@@ -6255,71 +6255,109 @@ def student_fee_group(stu: dict, current_year: int) -> str:
 
 def compute_student_financials(student_id: int, class_name: str, term: str, year: int) -> dict:
     """
-    Ground-truth per-student finance used by reports and fees screens.
-
-    Rules:
-      - Expected fees: strict by (class_name, section) from class_fees.
-      - Requirements: SUM by class for this term (or global items with term NULL/'').
-      - Transport: fare added to expected requirements; transport payments are already
-        recorded as payment_type='requirements' so DO NOT add them to paid again.
-      - Bursary: SUM for this student/term/year.
-      - Payments: only non-void rows (comment NOT LIKE '%void%').
-      - OB: SUM(expected_amount - amount_paid) for opening_balance rows (non-void).
-      - Prior arrears: SUM(expected - bursary - paid) for prior terms/years (clamped ≥ 0).
-      - Overall balance = carry_forward + current_term_balance.
+    Updated to match new schema:
+      - class_fees: (class_name, section, year, term_no, fee_group)
+      - requirements: (class_name, section, year, term_no or NULL, fee_group, qty, amount)
+      - bursaries: should use (term_no, year) ideally (fallback to term label if your table doesn't have term_no)
+      - fees: should use (term_no, year) for current payments
     """
+
     def _term_order_val(t: str) -> int:
         t = (t or "").strip().lower()
         return 1 if t == "term 1" else 2 if t == "term 2" else 3 if t == "term 3" else 99
 
+    term_no = term_to_no(term) or _term_order_val(term)
+
     conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
     try:
-        # --- student + section ---
-        cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT class_name, section, year_of_joining FROM students WHERE id=%s", (student_id,))
+        # --- student info ---
+        cur.execute("""
+            SELECT class_name, section, year_of_joining
+            FROM students
+            WHERE id=%s
+            LIMIT 1
+        """, (student_id,))
         stu = cur.fetchone() or {}
-        cur.close()
 
         eff_class = (stu.get("class_name") or class_name or "").strip()
 
         # normalize section
         try:
-            sec_norm = norm_section((stu.get("section") or "").strip())
-        except NameError:
+            sec_norm = norm_section((stu.get("section") or "").strip())  # Day / Boarding
+        except Exception:
             s = (stu.get("section") or "").strip().lower()
-            sec_norm = "Day" if s in ("day", "d") else ("Boarding" if s in ("boarding", "board", "b") else "")
+            sec_norm = "Day" if s in ("day", "d") else ("Boarding" if s in ("boarding", "board", "b") else "Day")
 
-        # --- expected fees (strict: class + section) ---
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            "SELECT amount FROM class_fees WHERE class_name=%s AND LOWER(section)=LOWER(%s) LIMIT 1",
-            (eff_class, sec_norm),
-        )
+        # fee group (New if joining year == current year)
+        fee_group = student_fee_group(stu, year)  # returns 'new' or 'old'
+        fee_group = fee_group.title()  # 'New' / 'Old'
+
+        # ---------------- A) Expected fees (strict) ----------------
+        # Try selected group first; if missing and group=New, fallback to Old
+        cur.execute("""
+            SELECT amount
+            FROM class_fees
+            WHERE class_name=%s
+              AND LOWER(section)=LOWER(%s)
+              AND year=%s
+              AND term_no=%s
+              AND LOWER(fee_group)=LOWER(%s)
+            LIMIT 1
+        """, (eff_class, sec_norm, year, term_no, fee_group))
         row = cur.fetchone()
-        cur.close()
         expected_fees = float(row["amount"]) if row and row["amount"] is not None else 0.0
 
-        # --- expected requirements (class for this term; allow NULL/'') ---
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT COALESCE(SUM(amount),0) AS total
-            FROM requirements
-            WHERE class_name=%s AND (term=%s OR term IS NULL OR term='')
-            """,
-            (eff_class, term),
-        )
-        row = cur.fetchone()
-        cur.close()
-        expected_requirements_base = float(row["total"] or 0.0)
+        if expected_fees == 0.0 and fee_group.lower() == "new":
+            cur.execute("""
+                SELECT amount
+                FROM class_fees
+                WHERE class_name=%s
+                  AND LOWER(section)=LOWER(%s)
+                  AND year=%s
+                  AND term_no=%s
+                  AND LOWER(fee_group)='old'
+                LIMIT 1
+            """, (eff_class, sec_norm, year, term_no))
+            row2 = cur.fetchone()
+            expected_fees = float(row2["amount"]) if row2 and row2["amount"] is not None else expected_fees
 
-        # --- transport overlay (fare to expected; payments already in 'requirements') ---
+        # ---------------- B) Expected requirements (qty-aware) ----------------
+        # Requirements can be section-specific or NULL (global)
+        cur.execute("""
+            SELECT COALESCE(SUM(r.amount * COALESCE(r.qty,1)),0) AS total, COUNT(*) AS c
+            FROM requirements r
+            WHERE r.class_name=%s
+              AND r.year=%s
+              AND (r.term_no=%s OR r.term_no IS NULL)
+              AND LOWER(r.fee_group)=LOWER(%s)
+              AND (r.section IS NULL OR LOWER(r.section)=LOWER(%s))
+        """, (eff_class, year, term_no, fee_group, sec_norm))
+        rr = cur.fetchone() or {}
+        expected_requirements_base = float(rr.get("total") or 0.0)
+        req_rows = int(rr.get("c") or 0)
+
+        if req_rows == 0 and fee_group.lower() == "new":
+            cur.execute("""
+                SELECT COALESCE(SUM(r.amount * COALESCE(r.qty,1)),0) AS total
+                FROM requirements r
+                WHERE r.class_name=%s
+                  AND r.year=%s
+                  AND (r.term_no=%s OR r.term_no IS NULL)
+                  AND LOWER(r.fee_group)='old'
+                  AND (r.section IS NULL OR LOWER(r.section)=LOWER(%s))
+            """, (eff_class, year, term_no, sec_norm))
+            rr2 = cur.fetchone() or {}
+            expected_requirements_base = float(rr2.get("total") or 0.0)
+
+        # ---------------- C) Transport overlay ----------------
         transport_fare = 0.0
         transport_paid_term = 0.0
         try:
             tinfo = transport_subscription_info(student_id, term, year)
         except Exception:
             tinfo = None
+
         if tinfo:
             transport_fare = float(tinfo.get("fare_per_term") or 0.0)
             if transport_fare > 0:
@@ -6330,103 +6368,85 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
 
         expected_requirements = expected_requirements_base + transport_fare
 
-        # --- bursary this term ---
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT COALESCE(SUM(amount),0) AS total
-            FROM bursaries
-            WHERE student_id=%s AND term=%s AND year=%s
-            """,
-            (student_id, term, year),
-        )
-        bursary_current = float((cur.fetchone() or {}).get("total") or 0.0)
+        # ---------------- D) Bursary this term ----------------
+        # Prefer term_no if your bursaries table has it, else fallback to term label
+        bursary_current = 0.0
+        try:
+            cur.execute("""
+                SELECT COALESCE(SUM(amount),0) AS total
+                FROM bursaries
+                WHERE student_id=%s AND year=%s AND term_no=%s
+            """, (student_id, year, term_no))
+            bursary_current = float((cur.fetchone() or {}).get("total") or 0.0)
+        except Exception:
+            cur.execute("""
+                SELECT COALESCE(SUM(amount),0) AS total
+                FROM bursaries
+                WHERE student_id=%s AND year=%s AND term=%s
+            """, (student_id, year, term))
+            bursary_current = float((cur.fetchone() or {}).get("total") or 0.0)
 
-        # --- payments this term (exclude VOID) ---
-        # fees
-        cur.execute(
-            """
+        # ---------------- E) Payments this term (use term_no) ----------------
+        cur.execute("""
             SELECT COALESCE(SUM(amount_paid),0) AS total
             FROM fees
             WHERE student_id=%s
-              AND TRIM(LOWER(term))=TRIM(LOWER(%s)) AND year=%s
-              AND LOWER(payment_type) IN ('school_fees','fees')
+              AND year=%s AND term_no=%s
+              AND payment_type_norm IN ('school_fees','fees')
               AND (comment IS NULL OR LOWER(comment) NOT LIKE '%void%')
-            """,
-            (student_id, term, year),
-        )
+        """, (student_id, year, term_no))
         paid_fees = float((cur.fetchone() or {}).get("total") or 0.0)
 
-        # requirements (includes transport if any)
-        cur.execute(
-            """
+        cur.execute("""
             SELECT COALESCE(SUM(amount_paid),0) AS total
             FROM fees
             WHERE student_id=%s
-              AND TRIM(LOWER(term))=TRIM(LOWER(%s)) AND year=%s
-              AND LOWER(payment_type)='requirements'
+              AND year=%s AND term_no=%s
+              AND payment_type_norm IN ('requirements','requirement')
               AND (comment IS NULL OR LOWER(comment) NOT LIKE '%void%')
-            """,
-            (student_id, term, year),
-        )
+        """, (student_id, year, term_no))
         paid_requirements = float((cur.fetchone() or {}).get("total") or 0.0)
 
-        # --- opening balance (non-void) ---
-        cur.execute(
-            """
+        # ---------------- F) Opening balance (non-void) ----------------
+        cur.execute("""
             SELECT COALESCE(SUM(COALESCE(expected_amount,0) - COALESCE(amount_paid,0)), 0) AS total
             FROM fees
             WHERE student_id=%s
-              AND LOWER(payment_type) IN ('opening_balance','opening balance','ob')
+              AND payment_type_norm IN ('opening_balance','ob')
               AND (comment IS NULL OR LOWER(comment) NOT LIKE '%void%')
-            """,
-            (student_id,),
-        )
+        """, (student_id,))
         opening_balance = float((cur.fetchone() or {}).get("total") or 0.0)
 
-        # --- prior arrears (before current term/year) ---
-        cur.execute(
-            """
-            SELECT expected_amount, bursary_amount, amount_paid, term, year
-            FROM fees
-            WHERE student_id=%s
-              AND LOWER(payment_type) IN ('school_fees','fees')
-              AND (year<%s OR (year=%s AND
-                   CASE LOWER(term)
-                     WHEN 'term 1' THEN 1
-                     WHEN 'term 2' THEN 2
-                     WHEN 'term 3' THEN 3
-                     ELSE 99 END < %s))
-            """,
-            (student_id, year, year, _term_order_val(term)),
-        )
-        prior_rows = cur.fetchall() or []
-        cur.close()
-
-        prior_arrears = 0.0
-        for r in prior_rows:
-            exp = float(r.get("expected_amount") or 0.0)
-            bur = float(r.get("bursary_amount") or 0.0)
-            paid = float(r.get("amount_paid") or 0.0)
-            prior_arrears += (exp - bur - paid)
+        # ---------------- G) Prior arrears (before current term) ----------------
+        cur.execute("""
+            SELECT COALESCE(SUM(exp - bur - paid),0) AS total
+            FROM (
+                SELECT
+                  COALESCE(expected_amount,0) AS exp,
+                  COALESCE(bursary_amount,0)  AS bur,
+                  COALESCE(amount_paid,0)     AS paid
+                FROM fees
+                WHERE student_id=%s
+                  AND payment_type_norm IN ('school_fees','fees')
+                  AND (comment IS NULL OR LOWER(comment) NOT LIKE '%void%')
+                  AND (year < %s OR (year=%s AND term_no < %s))
+            ) t
+        """, (student_id, year, year, term_no))
+        prior_arrears = float((cur.fetchone() or {}).get("total") or 0.0)
         if prior_arrears < 0:
             prior_arrears = 0.0
 
-        # --- carry forward ---
         carry_forward = opening_balance + prior_arrears
 
-        # --- balances (transport added to expected; NOT added to paid again) ---
-        total_due_this_term = max(expected_fees - bursary_current, 0.0) + expected_requirements
+        # ---------------- H) Net & balances ----------------
+        fees_expected_net = max(expected_fees - bursary_current, 0.0)
+        total_due_this_term = fees_expected_net + expected_requirements
+
         balance_this_term = total_due_this_term - (paid_fees + paid_requirements)
         overall_balance = carry_forward + balance_this_term
 
-        # helpful extras (non-breaking)
-        credit_this_term = max(0.0, -balance_this_term)
-        overall_credit = max(0.0, -overall_balance)
-        balance_this_term_safe = max(0.0, balance_this_term)
-
+        # safe display helpers
         return {
-            # ORIGINAL FIELDS (unchanged keys)
             "expected_fees": expected_fees,
             "expected_requirements": expected_requirements,
             "bursary_current": bursary_current,
@@ -6436,24 +6456,24 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
             "total_due_this_term": total_due_this_term,
             "balance_this_term": balance_this_term,
             "overall_balance": overall_balance,
+
             "opening_balance_raw": opening_balance,
             "prior_arrears_raw": prior_arrears,
             "transport_due_term": transport_fare,
             "transport_paid_term": transport_paid_term,
             "transport_balance_term": max(transport_fare - transport_paid_term, 0.0),
 
-            # OPTIONAL helpers for UI
-            "credit_this_term": credit_this_term,
-            "overall_credit": overall_credit,
-            "balance_this_term_safe": balance_this_term_safe,
+            # debug helpful
+            "fee_group_used": fee_group,
+            "term_no": term_no,
         }
+
     finally:
         try:
             cur.close()
         except Exception:
             pass
         conn.close()
-
 
 def _expand_terms_from_row(row: dict):
     """
@@ -20366,6 +20386,7 @@ def reprint_receipt(fee_id):
 
 
 
+
 @app.route("/start_payment", methods=["GET", "POST"])
 @require_role("admin", "bursar")
 def start_payment():
@@ -20526,17 +20547,18 @@ def start_payment():
         reqs = get_class_requirements(student["class_name"], sel_term) or []
 
         # map requirement_name -> sum paid this term (excludes voided)
+        term_no = term_to_no(sel_term) or 1
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
             SELECT TRIM(LOWER(requirement_name)) AS nm, COALESCE(SUM(amount_paid),0) AS t
               FROM fees
              WHERE student_id=%s
-               AND TRIM(LOWER(term))=TRIM(LOWER(%s)) AND year=%s
-               AND LOWER(payment_type)='requirements'
+               AND year=%s AND term_no=%s 
+               AND payment_type_norm IN('requirements','requirement')
                AND (comment IS NULL OR LOWER(comment) NOT LIKE '%void%')
              GROUP BY TRIM(LOWER(requirement_name))
-        """, (student["id"], sel_term, current_year))
+        """, (student["id"], current_year, term_no))
         paid_map = {r["nm"]: float(r["t"] or 0.0) for r in (cur.fetchall() or [])}
         cur.close(); conn.close()
 
@@ -20550,7 +20572,7 @@ def start_payment():
 
         # balances summary
         fin = compute_student_financials(student["id"], student["class_name"], sel_term, current_year)
-
+ 
         # transport (as synthetic requirement)
         try:
             tinfo = transport_subscription_info(student["id"], sel_term, current_year)
