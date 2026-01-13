@@ -1,8 +1,6 @@
-
 {% extends "base.html" %}
 {% block content %}
 <style>
-  /* General readable line-height (~1.5) */
   body, .statement-area, .statement-area * { line-height: 1.5; }
 
   @page { size: auto; margin: 10mm; }
@@ -28,10 +26,24 @@
   .receipt-badge {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
+  .credit { color:#0a7f2e; font-weight:700; }
+  .debit  { color:#b00020; font-weight:700; }
 </style>
 
+{% macro money(v) -%}
+  {{ "{:,.0f}".format(v or 0) }}
+{%- endmacro %}
+
+{% macro signed_money(v) -%}
+  {% set x = (v or 0) | float %}
+  {% if x < 0 %}
+    <span class="credit">CR {{ "{:,.0f}".format(-x) }}</span>
+  {% else %}
+    <span class="debit">UGX {{ "{:,.0f}".format(x) }}</span>
+  {% endif %}
+{%- endmacro %}
+
 <div class="container mt-3 statement-area">
-  <!-- Top controls -->
   <div class="d-flex justify-content-between align-items-center no-print mb-2">
     <div class="d-flex gap-2">
       <a class="btn btn-primary btn-sm" href="{{ url_for('student_statement') }}">&larr; Back To Statement</a>
@@ -39,7 +51,6 @@
     </div>
     <div class="d-flex gap-2">
       {% if student %}
-      <!-- NEW: Export PDF button (keeps all other logic unchanged) -->
       <a class="btn btn-success btn-sm" href="{{ url_for('student_statement_pdf', student_id=student.id) }}">
         <i class="bi bi-file-earmark-pdf"></i> Export PDF
       </a>
@@ -51,7 +62,6 @@
 
   <div class="card shadow-sm">
     <div class="card-body">
-      <!-- Header -->
       <div class="row align-items-center statement-header pb-3 mb-3">
         <div class="col-auto">
           <img src="{{ school.logo_url }}" alt="Logo" style="height:64px; width:auto;">
@@ -71,67 +81,66 @@
         </div>
       </div>
 
-      <!-- Student info -->
-		<div class="row g-3 align-items-start">
-		  <div class="col-md-5">
-			<div><strong>Student:</strong> {{ student.first_name }} {{ student.middle_name }} {{ student.last_name }}</div>
-			<div><strong>Student No.:</strong> {{ student.student_number }}</div>
-			<div><strong>Class / Stream:</strong> {{ student.class_name }} {{ student.stream or '' }}</div>
-		  </div>
+      <div class="row g-3 align-items-start">
+        <div class="col-md-5">
+          <div><strong>Student:</strong> {{ student.first_name }} {{ student.middle_name }} {{ student.last_name }}</div>
+          <div><strong>Student No.:</strong> {{ student.student_number }}</div>
+          <div><strong>Class / Stream:</strong> {{ student.class_name }} {{ student.stream or '' }}</div>
+        </div>
 
-		  <div class="col-md-5">
-			<div><strong>Section:</strong> {{ student.section or '-' }}</div>
-			<div><strong>Parent:</strong> {{ student.parent_name or '-' }}</div>
-			<div><strong>Contact:</strong> {{ student.parent_contact or '-' }}</div>
-		  </div>
+        <div class="col-md-5">
+          <div><strong>Section:</strong> {{ student.section or '-' }}</div>
+          <div><strong>Parent:</strong> {{ student.parent_name or '-' }}</div>
+          <div><strong>Contact:</strong> {{ student.parent_contact or '-' }}</div>
+        </div>
 
-		  <div class="col-md-2 text-center">
-			{% if student.photo %}
-			  <img
-				src="{{ url_for('static', filename=student.photo|replace('static/', '')) }}"
-				alt="Student photo"
-				class="img-thumbnail mb-1"
-				style="max-height: 120px; width: auto;"
-			  >
-			{% else %}
-			  <small class="text-muted">No photo</small>
-			{% endif %}
-		  </div>
-		</div>
-
+        <div class="col-md-2 text-center">
+          {% if student.photo %}
+            <img src="{{ url_for('static', filename=student.photo|replace('static/', '')) }}"
+                 alt="Student photo"
+                 class="img-thumbnail mb-1"
+                 style="max-height: 120px; width: auto;">
+          {% else %}
+            <small class="text-muted">No photo</small>
+          {% endif %}
+        </div>
+      </div>
 
       <div class="waterline"></div>
 
-      <!-- Financial summary (current term) -->
       <div class="row g-3 totals">
         <div class="col-md-4">
-          <div><span class="label">Expected Fees (Term):</span> UGX {{ "{:,.0f}".format(fin.expected_fees or 0) }}</div>
-          <div><span class="label">Expected Requirements:</span> UGX {{ "{:,.0f}".format(fin.expected_requirements or 0) }}</div>
-          <div><span class="label">Bursary (Term):</span> UGX {{ "{:,.0f}".format(fin.bursary_current or 0) }}</div>
+          <div><span class="label">Expected Fees (Term):</span> UGX {{ money(fin.expected_fees) }}</div>
+          <div><span class="label">Expected Requirements:</span> UGX {{ money(fin.expected_requirements) }}</div>
+          <div><span class="label">Bursary (Term):</span> UGX {{ money(fin.bursary_current) }}</div>
         </div>
         <div class="col-md-4">
-          <div><span class="label">Paid Fees (Term):</span> UGX {{ "{:,.0f}".format(fin.paid_fees or 0) }}</div>
-          <div><span class="label">Paid Requirements (Term):</span> UGX {{ "{:,.0f}".format(fin.paid_requirements or 0) }}</div>
-          <div><span class="label">Carry Forward (incl. OB):</span> UGX {{ "{:,.0f}".format(fin.carry_forward or 0) }}</div>
+          <div><span class="label">Paid Fees (Term):</span> UGX {{ money(fin.paid_fees) }}</div>
+          <div><span class="label">Paid Requirements (Term):</span> UGX {{ money(fin.paid_requirements) }}</div>
+          <div>
+            <span class="label">Carry Forward:</span>
+            {{ signed_money(fin.carry_forward) }}
+          </div>
         </div>
         <div class="col-md-4">
-          <div><span class="label">Total Due (This Term):</span> UGX {{ "{:,.0f}".format(fin.total_due_this_term or 0) }}</div>
-          <div><span class="label">Balance (This Term):</span> UGX {{ "{:,.0f}".format(fin.balance_this_term or 0) }}</div>
+          <div><span class="label">Total Due (This Term):</span> UGX {{ money(fin.total_due_this_term) }}</div>
+          <div>
+            <span class="label">Balance (This Term):</span>
+            {{ signed_money(fin.balance_this_term) }}
+          </div>
           <div class="fs-5 mt-2">
-            <span class="label">Overall Outstanding:</span>
-            <strong>UGX {{ "{:,.0f}".format(fin.overall_balance or 0) }}</strong>
+            <span class="label">Overall:</span>
+            <strong>{{ signed_money(fin.overall_balance) }}</strong>
           </div>
         </div>
       </div>
 
       <div class="waterline"></div>
 
-      <!-- Transactions grouped by Year/Term -->
       {% for y, terms in grouped.items()|sort %}
         <h6 class="mt-3">{{ y }}</h6>
         {% set ordered_terms = ['Term 1','Term 2','Term 3'] %}
 
-        {# Preferred order #}
         {% for t in ordered_terms %}
           {% if terms.get(t) %}
             {% set rows = terms[t] %}
@@ -164,10 +173,10 @@
                     <td>{{ r.payment_type|capitalize }}</td>
                     <td>{{ r.method or '' }}</td>
                     <td>{% if r.payment_type == 'requirements' %}{{ r.requirement_name }}{% else %}—{% endif %}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.amount_paid or 0) }}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.expected_amount or 0) }}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.bursary_amount or 0) }}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.carried_forward or 0) }}</td>
+                    <td class="text-end">{{ money(r.amount_paid) }}</td>
+                    <td class="text-end">{{ money(r.expected_amount) }}</td>
+                    <td class="text-end">{{ money(r.bursary_amount) }}</td>
+                    <td class="text-end">{{ money(r.carried_forward) }}</td>
                     <td>{{ r.comment }}</td>
                     {% if session.get('role') == 'admin' %}
                     <td class="no-print">
@@ -185,7 +194,6 @@
           {% endif %}
         {% endfor %}
 
-        {# Any other unexpected term labels #}
         {% for t, rows in terms|dictsort %}
           {% if t not in ordered_terms %}
             <div class="table-responsive mb-3">
@@ -217,10 +225,10 @@
                     <td>{{ r.payment_type|capitalize }}</td>
                     <td>{{ r.method or '' }}</td>
                     <td>{% if r.payment_type == 'requirements' %}{{ r.requirement_name }}{% else %}—{% endif %}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.amount_paid or 0) }}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.expected_amount or 0) }}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.bursary_amount or 0) }}</td>
-                    <td class="text-end">{{ "{:,.0f}".format(r.carried_forward or 0) }}</td>
+                    <td class="text-end">{{ money(r.amount_paid) }}</td>
+                    <td class="text-end">{{ money(r.expected_amount) }}</td>
+                    <td class="text-end">{{ money(r.bursary_amount) }}</td>
+                    <td class="text-end">{{ money(r.carried_forward) }}</td>
                     <td>{{ r.comment }}</td>
                     {% if session.get('role') == 'admin' %}
                     <td class="no-print">
@@ -239,7 +247,6 @@
         {% endfor %}
       {% endfor %}
 
-      <!-- Footer / signature -->
       <div class="mt-3">
         <div class="row">
           <div class="col"><strong>Prepared by:</strong> ________________________</div>

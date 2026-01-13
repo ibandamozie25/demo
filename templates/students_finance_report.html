@@ -1,24 +1,21 @@
-
 {% extends 'base.html' %}
 {% block content %}
 
 <style>
-  /* ---- Very compact layout ---- */
   .finance-toolbar{
     display:flex; align-items:center; justify-content:space-between;
     gap:10px; margin:8px 0;
   }
   .finance-toolbar .right{ display:flex; gap:6px; flex-wrap:wrap }
 
-  /* ---- Super-compact table ---- */
-  .finance-wrap { overflow-x:hidden; } /* aim to fit without scrolling */
+  .finance-wrap { overflow-x:hidden; }
   table.finance { width:100%; border-collapse:collapse; table-layout:fixed; }
   table.finance th, table.finance td{
     border:1px solid #cfd4da;
     padding:2px 3px;
-    font-size:10px; /* tighter font */
+    font-size:10px;
     line-height:1.15;
-    white-space:nowrap; /* keep numbers on one line */
+    white-space:nowrap;
   }
   table.finance thead th{
     background:#eaf2ff; font-weight:600;
@@ -27,41 +24,39 @@
   .text-start{ text-align:left !important; }
   .text-end{ text-align:right !important; }
 
-   /* Truncate long text in small columns */
-  .truncate{
-    display:block; overflow:hidden; text-overflow:ellipsis;
-  }
+  .truncate{ display:block; overflow:hidden; text-overflow:ellipsis; }
 
-  /* Column widths tuned to fit a typical laptop viewport (~1280px) */
-  .w-no { width: 80px; } /* Student No. */
-  .w-name { width:130px; } /* Name */
-  .w-cls { width: 60px; } /* Class */
-  .w-str { width: 30px; } /* Stream */
-  .w-rte { width:60px; } /* Transport Route */
-  .w-num { width: 66px; } /* All numeric columns */
+  .w-no { width: 80px; }
+  .w-name { width:130px; }
+  .w-cls { width: 60px; }
+  .w-str { width: 30px; }
+  .w-rte { width:60px; }
+  .w-num { width: 66px; }
 
   tfoot tr{ background:#f6f7f9; font-weight:700; }
+
+  .credit { color:#0a7f2e; font-weight:700; }
+  .debit  { color:#b00020; font-weight:700; }
 </style>
 
 <div class="container mt-2">
-
   <div class="finance-toolbar">
     <h6 class="m-0 text-primary">Students Finance Report</h6>
     <div class="right">
-		<a class="btn btn-success btn-sm"
-		   href="{{ url_for('export_students_finance_csv',
-							student_number=filters.student_number,
-							last_name=filters.last_name,
-							class_name=filters.class_name,
-							term=filters.term,
-							year=filters.year) }}">
-		  Export CSV
-		</a>
+      <a class="btn btn-success btn-sm"
+         href="{{ url_for('export_students_finance_csv',
+            student_number=filters.student_number,
+            last_name=filters.last_name,
+            class_name=filters.class_name,
+            term=filters.term,
+            year=filters.year) }}">
+        Export CSV
+      </a>
       <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('dashboard') }}">Back</a>
     </div>
   </div>
 
-  <!-- Filters (compact) -->
+  <!-- Filters -->
   <form method="get" class="row g-2 border rounded p-2 shadow-sm mb-2" style="font-size:12px;">
     <div class="col-6 col-md-2">
       <label class="form-label mb-1">Student No.</label>
@@ -97,27 +92,42 @@
     </div>
   </form>
 
+  {% macro money(v) -%}
+    {{ "{:,.0f}".format(v or 0) }}
+  {%- endmacro %}
+
+  {% macro debt_or_credit(v) -%}
+    {# If your SQL clamps outstanding to >=0, you will never see credit here.
+       If you decide to allow negatives, this will display credits nicely. #}
+    {% set x = (v or 0) | float %}
+    {% if x < 0 %}
+      <span class="credit">CR {{ "{:,.0f}".format(-x) }}</span>
+    {% else %}
+      <span class="debit">{{ "{:,.0f}".format(x) }}</span>
+    {% endif %}
+  {%- endmacro %}
+
   <div class="finance-wrap">
     <table class="finance align-middle">
       <colgroup>
-        <col class="w-no"> <!-- Stu No. -->
-        <col class="w-name"> <!-- Name -->
-        <col class="w-cls"> <!-- Class -->
-        <col class="w-str"> <!-- Strm -->
-        <col class="w-num"> <!-- Fees Exp -->
-        <col class="w-num"> <!-- Fees Pd -->
-        <col class="w-num"> <!-- Fees Bal -->
-        <col class="w-num"> <!-- Req Exp -->
-        <col class="w-num"> <!-- Req Pd -->
-        <col class="w-num"> <!-- Req Bal -->
-        <col class="w-rte"> <!-- Route -->
-        <col class="w-num"> <!-- Tr Due -->
-        <col class="w-num"> <!-- Tr Pd -->
-        <col class="w-num"> <!-- Tr Bal -->
-        <col class="w-num"> <!-- CFwd -->
-        <col class="w-num"> <!-- Ovr Exp -->
-        <col class="w-num"> <!-- Ovr Pd -->
-        <col class="w-num"> <!-- Ovr Out -->
+        <col class="w-no">
+        <col class="w-name">
+        <col class="w-cls">
+        <col class="w-str">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-rte">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
+        <col class="w-num">
       </colgroup>
 
       <thead class="text-center">
@@ -156,24 +166,26 @@
           <td class="text-start">{{ r.class_name }}</td>
           <td class="text-start">{{ r.stream or '' }}</td>
 
-          <td class="text-end">{{ "{:,.0f}".format(r.fees_expected or 0) }}</td>
-          <td class="text-end">{{ "{:,.0f}".format(r.fees_paid or 0) }}</td>
-          <td class="text-end">{{ "{:,.0f}".format(r.fees_balance or 0) }}</td>
+          <td class="text-end">{{ money(r.fees_expected) }}</td>
+          <td class="text-end">{{ money(r.fees_paid) }}</td>
+          <td class="text-end">{{ money(r.fees_balance) }}</td>
 
-          <td class="text-end">{{ "{:,.0f}".format(r.req_expected or 0) }}</td>
-          <td class="text-end">{{ "{:,.0f}".format(r.req_paid or 0) }}</td>
-          <td class="text-end">{{ "{:,.0f}".format(r.req_balance or 0) }}</td>
+          <td class="text-end">{{ money(r.req_expected) }}</td>
+          <td class="text-end">{{ money(r.req_paid) }}</td>
+          <td class="text-end">{{ money(r.req_balance) }}</td>
 
-          <td class="text-start"><span class="truncate">{{ r.transport_route }}</span></td>
-          <td class="text-end">{{ "{:,.0f}".format(r.tr_due or 0) }}</td>
-          <td class="text-end">{{ "{:,.0f}".format(r.tr_paid or 0) }}</td>
-          <td class="text-end">{{ "{:,.0f}".format(r.tr_balance or 0) }}</td>
+          {# backend does not provide transport_route currently #}
+          <td class="text-start"><span class="truncate">{{ r.transport_route or '—' }}</span></td>
 
-          <td class="text-end"><strong>{{ "{:,.0f}".format(r.carried_forward or 0) }}</strong></td>
+          <td class="text-end">{{ money(r.tr_due) }}</td>
+          <td class="text-end">{{ money(r.tr_paid) }}</td>
+          <td class="text-end">{{ money(r.tr_balance) }}</td>
 
-          <td class="text-end"><strong>{{ "{:,.0f}".format(r.overall_expected or 0) }}</strong></td>
-          <td class="text-end"><strong>{{ "{:,.0f}".format(r.overall_paid or 0) }}</strong></td>
-          <td class="text-end"><strong>{{ "{:,.0f}".format(r.overall_outstanding or 0) }}</strong></td>
+          <td class="text-end"><strong>{{ money(r.carried_forward) }}</strong></td>
+
+          <td class="text-end"><strong>{{ money(r.overall_expected) }}</strong></td>
+          <td class="text-end"><strong>{{ money(r.overall_paid) }}</strong></td>
+          <td class="text-end"><strong>{{ debt_or_credit(r.overall_outstanding) }}</strong></td>
         </tr>
         {% else %}
         <tr><td colspan="18" class="text-center">No matching records.</td></tr>
@@ -184,24 +196,24 @@
         <tr>
           <th class="text-start" colspan="4">Totals</th>
 
-          <th class="text-end">{{ "{:,.0f}".format(totals.fees_expected or 0) }}</th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.fees_paid or 0) }}</th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.fees_balance or 0) }}</th>
+          <th class="text-end">{{ money(totals.fees_expected) }}</th>
+          <th class="text-end">{{ money(totals.fees_paid) }}</th>
+          <th class="text-end">{{ money(totals.fees_balance) }}</th>
 
-          <th class="text-end">{{ "{:,.0f}".format(totals.req_expected or 0) }}</th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.req_paid or 0) }}</th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.req_balance or 0) }}</th>
+          <th class="text-end">{{ money(totals.req_expected) }}</th>
+          <th class="text-end">{{ money(totals.req_paid) }}</th>
+          <th class="text-end">{{ money(totals.req_balance) }}</th>
 
-          <th><!-- route --></th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.tr_due or 0) }}</th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.tr_paid or 0) }}</th>
-          <th class="text-end">{{ "{:,.0f}".format(totals.tr_balance or 0) }}</th>
+          <th></th>
+          <th class="text-end">{{ money(totals.tr_due) }}</th>
+          <th class="text-end">{{ money(totals.tr_paid) }}</th>
+          <th class="text-end">{{ money(totals.tr_balance) }}</th>
 
-          <th class="text-end">{{ "{:,.0f}".format(totals.carried_forward or 0) }}</th>
+          <th class="text-end">{{ money(totals.carried_forward) }}</th>
 
-          <th class="text-end"><strong>{{ "{:,.0f}".format(totals.overall_expected or 0) }}</strong></th>
-          <th class="text-end"><strong>{{ "{:,.0f}".format(totals.overall_paid or 0) }}</strong></th>
-          <th class="text-end"><strong>{{ "{:,.0f}".format(totals.overall_outstanding or 0) }}</strong></th>
+          <th class="text-end"><strong>{{ money(totals.overall_expected) }}</strong></th>
+          <th class="text-end"><strong>{{ money(totals.overall_paid) }}</strong></th>
+          <th class="text-end"><strong>{{ debt_or_credit(totals.overall_outstanding) }}</strong></th>
         </tr>
       </tfoot>
     </table>
