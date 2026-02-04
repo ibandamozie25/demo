@@ -22017,6 +22017,18 @@ def mark_sheet():
         sc = pick_average_row_score(r)
         if sc is not None:
             per[r["student_id"]][r["subject_id"]] = sc
+            
+
+    # ✅ IMPORTANT: remove subjects that have NO usable marks in this class/stream/term/year
+    if student_ids and subjects:
+        subj_keep = []
+        for subj in subjects:
+            sid_subj = subj["id"]
+            has_any = any(per.get(stid, {}).get(sid_subj) is not None for stid in student_ids)
+            if has_any:
+                subj_keep.append(subj)
+        subjects = subj_keep
+
 
     # core detection for subjects list
     def _is_core(subj: dict) -> bool:
@@ -22189,6 +22201,17 @@ def mark_sheet_pdf_reportlab():
         sc = pick_average_row_score(r)
         if sc is not None:
             per[r["student_id"]][r["subject_id"]] = sc
+            
+
+    # ✅ IMPORTANT: keep only subjects that have at least one usable mark
+    if student_ids and subjects:
+        subj_keep = []
+        for subj in subjects:
+            sid_subj = subj["id"]
+            has_any = any(per.get(stid, {}).get(sid_subj) is not None for stid in student_ids)
+            if has_any:
+                subj_keep.append(subj)
+        subjects = subj_keep
 
     def _is_core(subj: dict) -> bool:
         code = (subj.get("code") or "").strip().upper()
