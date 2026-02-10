@@ -6208,6 +6208,278 @@ def ensure_bursaries_schema(conn):
     cur.close()
 
 
+
+
+# ======================= TRANSPORT (as Other Income) =========================
+# Uses your existing `other_income` table exactly.
+
+
+TRANSPORT_DESC = "Transport"  # stored in other_income.description
+
+# ---------- 1) Schema (unchanged from your version) ----------
+
+
+def ensure_transport_schema(conn):
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS transport_routes (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(30) NOT NULL,
+        tr DOUBLE NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_transport_routes_name (name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """)
+
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS transport_subscriptions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        student_id INT NOT NULL,
+        route_id INT NOT NULL,
+        start_term VARCHAR(15) NOT NULL,
+        start_year INT NOT NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(student_id, route_id, start_term, start_year),
+        FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+        FOREIGN KEY(route_id) REFERENCES transport_routes(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """)
+    conn.commit()
+    cur.close()
+
+
+def transport_get_routes(conn=None):
+    """
+    Return all transport routes ordered by name.
+    Ensures the transport tables exist before querying.
+    """
+    close_after = False
+    if conn is None:
+        conn = get_db_connection()
+        close_after = True
+
+    # make sure tables exist
+    ensure_transport_schema(conn)
+
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        "SELECT id, name, fare_per_term FROM transport_routes ORDER BY name"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    if close_after:
+        conn.close()
+    return rows
+
+
+def get_class_requirements_without_transport(class_name: str, term: str):
+    """
+    Your original requirements (no transport). We simply filter names that look like 'Transport (...)'.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT id, class_name, term, name, qty, amount
+        FROM requirements
+        WHERE class_name=%s AND term=%s
+          AND (name NOT LIKE 'Transport (%' AND name NOT LIKE 'Transport% - %')
+        ORDER BY name
+    """, (class_name, term))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def _term_no_from_term(term: str) -> int:
+    """Fallback if term_to_no() isn't available everywhere."""
+    try:
+        tn = term_to_no(term)
+        if tn:
+            return int(tn)
+    except Exception:
+        pass
+
+    t = (term or "").strip().lower()
+    if t == "term 1":
+        return 1
+    if t == "term 2":
+        return 2
+    if t == "term 3":
+        return 3
+    return 1
+
+
+def transport_subscribe(student_id: int, route_id: int, term: str, year: int):
+    """
+    Subscribe (or re-activate) a student's transport.
+    Requires a UNIQUE KEY to support ON DUPLICATE KEY UPDATE.
+    Recommended: UNIQUE KEY uq_transport_student_active (student_id)
+    or (student_id, route_id) depending on your design.
+    """
+    term_no = _term_no_from_term(term)
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            INSERT INTO transport_subscriptions
+              (student_id, route_id, start_term, start_year, active, term_no)
+            VALUES (%s, %s, %s, %s, 1, %s)
+            ON DUPLICATE KEY UPDATE
+              route_id = VALUES(route_id),
+              start_term = VALUES(start_term),
+              start_year = VALUES(start_year),
+              term_no = VALUES(term_no),
+              active = 1
+        """, (student_id, route_id, term, year, term_no))
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+
+def transport_unsubscribe(student_id: int, route_id: int | None = None):
+    """
+    Unsubscribe transport (disable active subscription).
+    If route_id is provided, it disables that specific route.
+    If route_id is None, it disables ANY active subscription for the student.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        if route_id:
+            cur.execute("""
+              UPDATE transport_subscriptions
+                 SET active = 0
+               WHERE student_id = %s
+                 AND route_id = %s
+                 AND active = 1
+            """, (student_id, route_id))
+        else:
+            cur.execute("""
+              UPDATE transport_subscriptions
+                 SET active = 0
+               WHERE student_id = %s
+                 AND active = 1
+            """, (student_id,))
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+
+def transport_subscription_info(student_id: int, term: str, year: int) -> dict:
+    """
+    Returns:
+      {
+        'has_sub': bool,
+        'route_id': int,
+        'route_name': str,
+        'fare_per_term': float
+      }
+
+    Logic: active subscription that started on/before the selected term/year.
+    Uses term_no for correct ordering/comparison.
+    """
+    sel_term_no = _term_no_from_term(term)
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT tr.id AS route_id, tr.name AS route_name, tr.fare_per_term
+            FROM transport_subscriptions ts
+            JOIN transport_routes tr ON tr.id = ts.route_id
+            WHERE ts.student_id = %s
+              AND ts.active = 1
+              AND (
+                    ts.start_year < %s
+                 OR (ts.start_year = %s AND COALESCE(ts.term_no, 0) <= %s)
+              )
+            ORDER BY ts.start_year DESC,
+                     COALESCE(ts.term_no, 0) DESC,
+                     ts.created_at DESC
+            LIMIT 1
+        """, (student_id, year, year, sel_term_no))
+        row = cur.fetchone()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+    if not row:
+        return {"has_sub": False, "route_id": 0, "route_name": "", "fare_per_term": 0.0}
+
+    return {
+        "has_sub": True,
+        "route_id": int(row.get("route_id") or 0),
+        "route_name": (row.get("route_name") or ""),
+        "fare_per_term": float(row.get("fare_per_term") or 0.0),
+    }
+
+
+def build_virtual_transport_requirement(student_id: int, term: str, year: int):
+    """
+    If subscribed, returns a synthetic requirement row for UI:
+      {id: 't-<route_id>', name: 'Transport - <route>', qty:1, amount: fare}
+    Else returns None.
+    """
+    info = transport_subscription_info(student_id, term, year)
+    if not info["has_sub"]:
+        return None
+
+    return {
+        "id": f"t-{info['route_id']}",
+        "class_name": "",
+        "term": term,
+        "name": f"Transport - {info['route_name']}",
+        "qty": 1,
+        "amount": info["fare_per_term"] or 0.0,
+    }
+
+
+def transport_active_for_student(conn, student_id: int, term: str, year: int):
+    """
+    Returns None if not subscribed for this term.
+    Else returns row with route_name, fare_per_term, route_id.
+    Uses term_no comparison for correctness.
+    """
+    sel_term_no = _term_no_from_term(term)
+
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+          SELECT tr.id as route_id, tr.name AS route_name, tr.fare_per_term
+          FROM transport_subscriptions ts
+          JOIN transport_routes tr ON tr.id = ts.route_id
+          WHERE ts.active = 1
+            AND ts.student_id = %s
+            AND (
+                  ts.start_year < %s
+               OR (ts.start_year = %s AND COALESCE(ts.term_no,0) <= %s)
+            )
+          ORDER BY ts.start_year DESC, COALESCE(ts.term_no,0) DESC, ts.created_at DESC
+          LIMIT 1
+        """, (student_id, year, year, sel_term_no))
+        return cur.fetchone()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+
+
 def _find_student_by_sn_or_ln(student_number, last_name):
     conn = get_db_connection()
     r = None
@@ -19770,275 +20042,6 @@ def transport_route_save():
     except Exception as e:
         flash(f"Failed to save route: {e}", "danger")
     return redirect(request.referrer or url_for("start_payment"))
-
-
-# ======================= TRANSPORT (as Other Income) =========================
-# Uses your existing `other_income` table exactly.
-
-
-TRANSPORT_DESC = "Transport"  # stored in other_income.description
-
-# ---------- 1) Schema (unchanged from your version) ----------
-
-
-def ensure_transport_schema(conn):
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-      CREATE TABLE IF NOT EXISTS transport_routes (
-        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(30) NOT NULL,
-        tr DOUBLE NOT NULL DEFAULT 0,
-        UNIQUE KEY uq_transport_routes_name (name)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    """)
-
-    cur.execute("""
-      CREATE TABLE IF NOT EXISTS transport_subscriptions (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        student_id INT NOT NULL,
-        route_id INT NOT NULL,
-        start_term VARCHAR(15) NOT NULL,
-        start_year INT NOT NULL,
-        active TINYINT NOT NULL DEFAULT 1,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(student_id, route_id, start_term, start_year),
-        FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
-        FOREIGN KEY(route_id) REFERENCES transport_routes(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    """)
-    conn.commit()
-    cur.close()
-
-
-def transport_get_routes(conn=None):
-    """
-    Return all transport routes ordered by name.
-    Ensures the transport tables exist before querying.
-    """
-    close_after = False
-    if conn is None:
-        conn = get_db_connection()
-        close_after = True
-
-    # make sure tables exist
-    ensure_transport_schema(conn)
-
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        "SELECT id, name, fare_per_term FROM transport_routes ORDER BY name"
-    )
-    rows = cur.fetchall()
-    cur.close()
-    if close_after:
-        conn.close()
-    return rows
-
-
-def get_class_requirements_without_transport(class_name: str, term: str):
-    """
-    Your original requirements (no transport). We simply filter names that look like 'Transport (...)'.
-    """
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT id, class_name, term, name, qty, amount
-        FROM requirements
-        WHERE class_name=%s AND term=%s
-          AND (name NOT LIKE 'Transport (%' AND name NOT LIKE 'Transport% - %')
-        ORDER BY name
-    """, (class_name, term))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-
-def _term_no_from_term(term: str) -> int:
-    """Fallback if term_to_no() isn't available everywhere."""
-    try:
-        tn = term_to_no(term)
-        if tn:
-            return int(tn)
-    except Exception:
-        pass
-
-    t = (term or "").strip().lower()
-    if t == "term 1":
-        return 1
-    if t == "term 2":
-        return 2
-    if t == "term 3":
-        return 3
-    return 1
-
-
-def transport_subscribe(student_id: int, route_id: int, term: str, year: int):
-    """
-    Subscribe (or re-activate) a student's transport.
-    Requires a UNIQUE KEY to support ON DUPLICATE KEY UPDATE.
-    Recommended: UNIQUE KEY uq_transport_student_active (student_id)
-    or (student_id, route_id) depending on your design.
-    """
-    term_no = _term_no_from_term(term)
-
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            INSERT INTO transport_subscriptions
-              (student_id, route_id, start_term, start_year, active, term_no)
-            VALUES (%s, %s, %s, %s, 1, %s)
-            ON DUPLICATE KEY UPDATE
-              route_id = VALUES(route_id),
-              start_term = VALUES(start_term),
-              start_year = VALUES(start_year),
-              term_no = VALUES(term_no),
-              active = 1
-        """, (student_id, route_id, term, year, term_no))
-        conn.commit()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-        conn.close()
-
-
-def transport_unsubscribe(student_id: int, route_id: int | None = None):
-    """
-    Unsubscribe transport (disable active subscription).
-    If route_id is provided, it disables that specific route.
-    If route_id is None, it disables ANY active subscription for the student.
-    """
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    try:
-        if route_id:
-            cur.execute("""
-              UPDATE transport_subscriptions
-                 SET active = 0
-               WHERE student_id = %s
-                 AND route_id = %s
-                 AND active = 1
-            """, (student_id, route_id))
-        else:
-            cur.execute("""
-              UPDATE transport_subscriptions
-                 SET active = 0
-               WHERE student_id = %s
-                 AND active = 1
-            """, (student_id,))
-        conn.commit()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-        conn.close()
-
-
-def transport_subscription_info(student_id: int, term: str, year: int) -> dict:
-    """
-    Returns:
-      {
-        'has_sub': bool,
-        'route_id': int,
-        'route_name': str,
-        'fare_per_term': float
-      }
-
-    Logic: active subscription that started on/before the selected term/year.
-    Uses term_no for correct ordering/comparison.
-    """
-    sel_term_no = _term_no_from_term(term)
-
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            SELECT tr.id AS route_id, tr.name AS route_name, tr.fare_per_term
-            FROM transport_subscriptions ts
-            JOIN transport_routes tr ON tr.id = ts.route_id
-            WHERE ts.student_id = %s
-              AND ts.active = 1
-              AND (
-                    ts.start_year < %s
-                 OR (ts.start_year = %s AND COALESCE(ts.term_no, 0) <= %s)
-              )
-            ORDER BY ts.start_year DESC,
-                     COALESCE(ts.term_no, 0) DESC,
-                     ts.created_at DESC
-            LIMIT 1
-        """, (student_id, year, year, sel_term_no))
-        row = cur.fetchone()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-        conn.close()
-
-    if not row:
-        return {"has_sub": False, "route_id": 0, "route_name": "", "fare_per_term": 0.0}
-
-    return {
-        "has_sub": True,
-        "route_id": int(row.get("route_id") or 0),
-        "route_name": (row.get("route_name") or ""),
-        "fare_per_term": float(row.get("fare_per_term") or 0.0),
-    }
-
-
-def build_virtual_transport_requirement(student_id: int, term: str, year: int):
-    """
-    If subscribed, returns a synthetic requirement row for UI:
-      {id: 't-<route_id>', name: 'Transport - <route>', qty:1, amount: fare}
-    Else returns None.
-    """
-    info = transport_subscription_info(student_id, term, year)
-    if not info["has_sub"]:
-        return None
-
-    return {
-        "id": f"t-{info['route_id']}",
-        "class_name": "",
-        "term": term,
-        "name": f"Transport - {info['route_name']}",
-        "qty": 1,
-        "amount": info["fare_per_term"] or 0.0,
-    }
-
-
-def transport_active_for_student(conn, student_id: int, term: str, year: int):
-    """
-    Returns None if not subscribed for this term.
-    Else returns row with route_name, fare_per_term, route_id.
-    Uses term_no comparison for correctness.
-    """
-    sel_term_no = _term_no_from_term(term)
-
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute("""
-          SELECT tr.id as route_id, tr.name AS route_name, tr.fare_per_term
-          FROM transport_subscriptions ts
-          JOIN transport_routes tr ON tr.id = ts.route_id
-          WHERE ts.active = 1
-            AND ts.student_id = %s
-            AND (
-                  ts.start_year < %s
-               OR (ts.start_year = %s AND COALESCE(ts.term_no,0) <= %s)
-            )
-          ORDER BY ts.start_year DESC, COALESCE(ts.term_no,0) DESC, ts.created_at DESC
-          LIMIT 1
-        """, (student_id, year, year, sel_term_no))
-        return cur.fetchone()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-
 
 
 
