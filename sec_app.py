@@ -6250,13 +6250,18 @@ def student_fee_group(stu: dict, current_year: int) -> str:
     return "new" if (yoj == int(current_year)) else "old"
 
 
+
 def compute_student_financials(student_id: int, class_name: str, term: str, year: int) -> dict:
     """
-    SAFE update:
-      - Does NOT change the returned keys other pages depend on.
+    SAFE update (non-breaking keys):
       - If fee_term_summary exists for (student, year, term_no): use it (authoritative),
         including credits (negative outstanding/carry_forward).
-      - Otherwise fall back to the old live-computation logic (unchanged).
+      - Otherwise fall back to live computation.
+      - IMPORTANT (as requested):
+          * Transport is INCLUDED inside expected_requirements
+          * overall_balance must reflect transport after subscribe/unsubscribe
+          * Transport is still returned separately for UI display
+      - Keys returned remain unchanged.
     """
 
     def _term_order_val(t: str) -> int:
@@ -6271,21 +6276,21 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
         # ---------- 1) Try authoritative summary first ----------
         cur.execute("""
             SELECT
-              COALESCE(expected_fees,0)          AS expected_fees,
-              COALESCE(expected_reqs_base,0)     AS expected_reqs_base,
-              COALESCE(transport_due_term,0)     AS transport_due_term,
-              COALESCE(transport_paid_term,0)    AS transport_paid_term,
-              COALESCE(bursary_current,0)        AS bursary_current,
-              COALESCE(paid_fees_nonvoid,0)      AS paid_fees_nonvoid,
-              COALESCE(paid_reqs_nonvoid,0)      AS paid_reqs_nonvoid,
-              COALESCE(fees_expected_net,0)      AS fees_expected_net,
-              COALESCE(req_expected_final,0)     AS req_expected_final,
-              COALESCE(carry_forward,0)          AS carry_forward,        -- signed allowed
-              COALESCE(overall_expected,0)       AS overall_expected,
-              COALESCE(overall_paid,0)           AS overall_paid,
-              COALESCE(overall_outstanding,0)    AS overall_outstanding,  -- signed allowed
-              COALESCE(opening_balance_nv,0)     AS opening_balance_nv,
-              COALESCE(prior_arrears,0)          AS prior_arrears
+              COALESCE(expected_fees,0) AS expected_fees,
+              COALESCE(expected_reqs_base,0) AS expected_reqs_base,
+              COALESCE(transport_due_term,0) AS transport_due_term,
+              COALESCE(transport_paid_term,0) AS transport_paid_term,
+              COALESCE(bursary_current,0) AS bursary_current,
+              COALESCE(paid_fees_nonvoid,0) AS paid_fees_nonvoid,
+              COALESCE(paid_reqs_nonvoid,0) AS paid_reqs_nonvoid,
+              COALESCE(fees_expected_net,0) AS fees_expected_net,
+              COALESCE(req_expected_final,0) AS req_expected_final,
+              COALESCE(carry_forward,0) AS carry_forward,
+              COALESCE(overall_expected,0) AS overall_expected,
+              COALESCE(overall_paid,0) AS overall_paid,
+              COALESCE(overall_outstanding,0) AS overall_outstanding,
+              COALESCE(opening_balance_nv,0) AS opening_balance_nv,
+              COALESCE(prior_arrears,0) AS prior_arrears
             FROM fee_term_summary
             WHERE student_id=%s AND year=%s AND term_no=%s
             LIMIT 1
@@ -6295,67 +6300,74 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
         if fs:
             expected_fees = float(fs["expected_fees"] or 0.0)
             expected_requirements_base = float(fs["expected_reqs_base"] or 0.0)
-            transport_fare = float(fs["transport_due_term"] or 0.0)
-            transport_paid_term = float(fs["transport_paid_term"] or 0.0)
 
             bursary_current = float(fs["bursary_current"] or 0.0)
             paid_fees = float(fs["paid_fees_nonvoid"] or 0.0)
             paid_requirements = float(fs["paid_reqs_nonvoid"] or 0.0)
 
-            # Keep same meaning as before
+            carry_forward = float(fs["carry_forward"] or 0.0) # signed ok
+            fees_expected_net = float(fs["fees_expected_net"] or 0.0)
+
+            opening_balance = float(fs["opening_balance_nv"] or 0.0) # informational
+            prior_arrears = float(fs["prior_arrears"] or 0.0) # informational
+
+            # ---- LIVE transport so subscribe/unsubscribe reflects instantly ----
+            transport_fare = 0.0
+            try:
+                tinfo = transport_subscription_info(student_id, term, year)
+            except Exception:
+                tinfo = None
+
+            if tinfo and tinfo.get("has_sub"):
+                transport_fare = float(tinfo.get("fare_per_term") or 0.0)
+
+            # Keep transport paid term as informational (it may come from summary or your own calc)
+            transport_paid_term = float(fs["transport_paid_term"] or 0.0)
+
+            # ✅ expected_requirements must include transport
             expected_requirements = expected_requirements_base + transport_fare
 
-            # Signed values (credit allowed)
-            carry_forward = float(fs["carry_forward"] or 0.0)
-            overall_balance = float(fs["overall_outstanding"] or 0.0)
+            # ✅ total due includes expected_requirements (already contains transport)
+            total_due_this_term = fees_expected_net + expected_requirements
 
-            # Keep your existing derived fields consistent
-            fees_expected_net = float(fs["fees_expected_net"] or 0.0)
-            total_due_this_term = fees_expected_net + float(fs["req_expected_final"] or 0.0)
-
+            # ✅ do NOT subtract transport_paid_term separately (your design pays transport via requirements channel)
             balance_this_term = total_due_this_term - (paid_fees + paid_requirements)
 
-            opening_balance = float(fs["opening_balance_nv"] or 0.0)  # informational
-            prior_arrears = float(fs["prior_arrears"] or 0.0)         # informational
+            # ✅ overall balance must reflect live transport
+            overall_balance = carry_forward + balance_this_term
 
-            # safe display helpers (extra keys; won’t break others)
+            # safe display helpers
             overall_outstanding_safe = max(overall_balance, 0.0)
             overall_credit = max(-overall_balance, 0.0)
             carry_forward_safe = max(carry_forward, 0.0)
             carry_credit = max(-carry_forward, 0.0)
 
             return {
-                # --- keys your pages already use ---
                 "expected_fees": expected_fees,
-                "expected_requirements": expected_requirements,
+                "expected_requirements": expected_requirements, # includes transport
                 "bursary_current": bursary_current,
                 "paid_fees": paid_fees,
                 "paid_requirements": paid_requirements,
-                "carry_forward": carry_forward,                 # now signed (credit ok)
+                "carry_forward": carry_forward,
                 "total_due_this_term": total_due_this_term,
-                "balance_this_term": balance_this_term,         # signed
-                "overall_balance": overall_balance,             # signed
+                "balance_this_term": balance_this_term,
+                "overall_balance": overall_balance,
 
-                # --- informational/debug keys you already had ---
                 "opening_balance_raw": opening_balance,
                 "prior_arrears_raw": prior_arrears,
                 "transport_due_term": transport_fare,
                 "transport_paid_term": transport_paid_term,
                 "transport_balance_term": transport_fare - transport_paid_term,
-                "fee_group_used": None,  # not stored in summary; keep key
+                "fee_group_used": None,
                 "term_no": term_no,
 
-                # --- new safe display helpers (optional) ---
                 "carry_forward_safe": carry_forward_safe,
                 "carry_credit": carry_credit,
                 "overall_outstanding_safe": overall_outstanding_safe,
                 "overall_credit": overall_credit,
             }
 
-        # ---------- 2) FALLBACK: your OLD LOGIC (unchanged behaviour) ----------
-        # If summary row is missing, we run your current computation exactly like before.
-        # (This ensures other flows don't suddenly change if summary isn't populated.)
-        # --- student info ---
+        # ---------- 2) FALLBACK: live computation ----------
         cur.execute("""
             SELECT class_name, section, year_of_joining
             FROM students
@@ -6373,7 +6385,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
             s = (stu.get("section") or "").strip().lower()
             sec_norm = "Day" if s in ("day", "d") else ("Boarding" if s in ("boarding", "board", "b") else "Day")
 
-        fee_group = student_fee_group(stu, year).title()  # 'New' / 'Old'
+        fee_group = student_fee_group(stu, year).title() # 'New' / 'Old'
 
         # A) Expected fees
         cur.execute("""
@@ -6403,7 +6415,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
             row2 = cur.fetchone()
             expected_fees = float(row2["amount"]) if row2 and row2["amount"] is not None else expected_fees
 
-        # B) Expected requirements
+        # B) Expected requirements (base)
         cur.execute("""
             SELECT COALESCE(SUM(r.amount * COALESCE(r.qty,1)),0) AS total, COUNT(*) AS c
             FROM requirements r
@@ -6430,7 +6442,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
             rr2 = cur.fetchone() or {}
             expected_requirements_base = float(rr2.get("total") or 0.0)
 
-        # C) Transport overlay
+        # C) Transport overlay (included)
         transport_fare = 0.0
         transport_paid_term = 0.0
         try:
@@ -6438,7 +6450,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
         except Exception:
             tinfo = None
 
-        if tinfo:
+        if tinfo and tinfo.get("has_sub"):
             transport_fare = float(tinfo.get("fare_per_term") or 0.0)
             if transport_fare > 0:
                 try:
@@ -6502,8 +6514,8 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
             FROM (
                 SELECT
                   COALESCE(expected_amount,0) AS exp,
-                  COALESCE(bursary_amount,0)  AS bur,
-                  COALESCE(amount_paid,0)     AS paid
+                  COALESCE(bursary_amount,0) AS bur,
+                  COALESCE(amount_paid,0) AS paid
                 FROM fees
                 WHERE student_id=%s
                   AND payment_type_norm IN ('school_fees','fees')
@@ -6515,7 +6527,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
         if prior_arrears < 0:
             prior_arrears = 0.0
 
-        # H) Carry forward from previous summary (signed allowed if exists, else 0)
+        # H) Carry forward from previous summary
         prev_year, prev_term = year, term_no - 1
         if term_no == 1:
             prev_year, prev_term = year - 1, 3
@@ -6560,6 +6572,7 @@ def compute_student_financials(student_id: int, class_name: str, term: str, year
         except Exception:
             pass
         conn.close()
+
 
 
 def _expand_terms_from_row(row: dict):
@@ -8810,62 +8823,12 @@ def compute_transport_term_status(student_id: int, class_name: str, term: str, y
     }
 
 
-def transport_subscribe(student_id: int, route_id: int, term: str, year: int):
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-      INSERT IGNORE INTO transport_subscriptions
-      (student_id, route_id, start_term, start_year, active)
-      VALUES (%s, %s, %s, %s, 1)
-    """, (student_id, route_id, term, year))
-    conn.commit()
-    cur.close()
-    conn.close()
 
 
-def transport_unsubscribe(student_id: int, route_id: int):
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-      UPDATE transport_subscriptions
-         SET active=0
-       WHERE student_id=%s AND route_id=%s AND active=1
-    """, (student_id, route_id))
-    conn.commit()
-    cur.close()
-    conn.close()
 
 
-def transport_subscription_info(student_id: int, term: str, year: int) -> dict:
-    """
-    Returns {'has_sub': bool, 'route_name': str, 'fare_per_term': float}
-    based on active subscription that started on/before the selected term/year.
-    """
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT tr.name AS route_name, tr.fare_per_term
-        FROM transport_subscriptions ts
-        JOIN transport_routes tr ON tr.id = ts.route_id
-        WHERE ts.student_id=%s AND ts.active=1
-          AND (ts.start_year < %s OR (ts.start_year = %s AND ts.start_term <= %s))
-        ORDER BY ts.start_year DESC,
-                 CASE ts.start_term
-                   WHEN 'Term 3' THEN 3
-                   WHEN 'Term 2' THEN 2
-                   WHEN 'Term 1' THEN 1
-                   ELSE 0
-                 END DESC
-        LIMIT 1
-    """, (student_id, year, year, term))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not row:
-        return {"has_sub": False, "route_name": "", "fare_per_term": 0.0}
-    return {"has_sub": True,
-            "route_name": row["route_name"],
-            "fare_per_term": float(row["fare_per_term"] or 0.0)}
+
+
 
 
 def transport_paid_via_requirements(conn, student_id: int, term: str, year: int) -> float:
@@ -19890,18 +19853,156 @@ def get_class_requirements_without_transport(class_name: str, term: str):
     return rows
 
 
+def _term_no_from_term(term: str) -> int:
+    """Fallback if term_to_no() isn't available everywhere."""
+    try:
+        tn = term_to_no(term)
+        if tn:
+            return int(tn)
+    except Exception:
+        pass
+
+    t = (term or "").strip().lower()
+    if t == "term 1":
+        return 1
+    if t == "term 2":
+        return 2
+    if t == "term 3":
+        return 3
+    return 1
+
+
+def transport_subscribe(student_id: int, route_id: int, term: str, year: int):
+    """
+    Subscribe (or re-activate) a student's transport.
+    Requires a UNIQUE KEY to support ON DUPLICATE KEY UPDATE.
+    Recommended: UNIQUE KEY uq_transport_student_active (student_id)
+    or (student_id, route_id) depending on your design.
+    """
+    term_no = _term_no_from_term(term)
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            INSERT INTO transport_subscriptions
+              (student_id, route_id, start_term, start_year, active, term_no)
+            VALUES (%s, %s, %s, %s, 1, %s)
+            ON DUPLICATE KEY UPDATE
+              route_id = VALUES(route_id),
+              start_term = VALUES(start_term),
+              start_year = VALUES(start_year),
+              term_no = VALUES(term_no),
+              active = 1
+        """, (student_id, route_id, term, year, term_no))
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+
+def transport_unsubscribe(student_id: int, route_id: int | None = None):
+    """
+    Unsubscribe transport (disable active subscription).
+    If route_id is provided, it disables that specific route.
+    If route_id is None, it disables ANY active subscription for the student.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        if route_id:
+            cur.execute("""
+              UPDATE transport_subscriptions
+                 SET active = 0
+               WHERE student_id = %s
+                 AND route_id = %s
+                 AND active = 1
+            """, (student_id, route_id))
+        else:
+            cur.execute("""
+              UPDATE transport_subscriptions
+                 SET active = 0
+               WHERE student_id = %s
+                 AND active = 1
+            """, (student_id,))
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+
+def transport_subscription_info(student_id: int, term: str, year: int) -> dict:
+    """
+    Returns:
+      {
+        'has_sub': bool,
+        'route_id': int,
+        'route_name': str,
+        'fare_per_term': float
+      }
+
+    Logic: active subscription that started on/before the selected term/year.
+    Uses term_no for correct ordering/comparison.
+    """
+    sel_term_no = _term_no_from_term(term)
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT tr.id AS route_id, tr.name AS route_name, tr.fare_per_term
+            FROM transport_subscriptions ts
+            JOIN transport_routes tr ON tr.id = ts.route_id
+            WHERE ts.student_id = %s
+              AND ts.active = 1
+              AND (
+                    ts.start_year < %s
+                 OR (ts.start_year = %s AND COALESCE(ts.term_no, 0) <= %s)
+              )
+            ORDER BY ts.start_year DESC,
+                     COALESCE(ts.term_no, 0) DESC,
+                     ts.created_at DESC
+            LIMIT 1
+        """, (student_id, year, year, sel_term_no))
+        row = cur.fetchone()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+    if not row:
+        return {"has_sub": False, "route_id": 0, "route_name": "", "fare_per_term": 0.0}
+
+    return {
+        "has_sub": True,
+        "route_id": int(row.get("route_id") or 0),
+        "route_name": (row.get("route_name") or ""),
+        "fare_per_term": float(row.get("fare_per_term") or 0.0),
+    }
+
+
 def build_virtual_transport_requirement(student_id: int, term: str, year: int):
     """
-    If the student is subscribed, return a synthetic requirement row for the UI:
-    {id: 't-<route_id>', name: 'Transport - <route>', qty:1, amount: fare}
-    else return None.
+    If subscribed, returns a synthetic requirement row for UI:
+      {id: 't-<route_id>', name: 'Transport - <route>', qty:1, amount: fare}
+    Else returns None.
     """
     info = transport_subscription_info(student_id, term, year)
     if not info["has_sub"]:
         return None
+
     return {
         "id": f"t-{info['route_id']}",
-        "class_name": "", "term": term,
+        "class_name": "",
+        "term": term,
         "name": f"Transport - {info['route_name']}",
         "qty": 1,
         "amount": info["fare_per_term"] or 0.0,
@@ -19912,21 +20013,34 @@ def transport_active_for_student(conn, student_id: int, term: str, year: int):
     """
     Returns None if not subscribed for this term.
     Else returns row with route_name, fare_per_term, route_id.
+    Uses term_no comparison for correctness.
     """
+    sel_term_no = _term_no_from_term(term)
+
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-      SELECT tr.id as route_id, tr.name AS route_name, tr.fare_per_term
-      FROM transport_subscriptions ts
-      JOIN transport_routes tr ON tr.id = ts.route_id
-      WHERE ts.active=1
-        AND ts.student_id=%s
-        AND (ts.start_year < %s OR (ts.start_year = %s AND ts.start_term <= %s))
-      ORDER BY ts.created_at DESC
-      LIMIT 1
-    """, (student_id, year, year, term))
-    row = cur.fetchone()
-    cur.close()
-    return row
+    try:
+        cur.execute("""
+          SELECT tr.id as route_id, tr.name AS route_name, tr.fare_per_term
+          FROM transport_subscriptions ts
+          JOIN transport_routes tr ON tr.id = ts.route_id
+          WHERE ts.active = 1
+            AND ts.student_id = %s
+            AND (
+                  ts.start_year < %s
+               OR (ts.start_year = %s AND COALESCE(ts.term_no,0) <= %s)
+            )
+          ORDER BY ts.start_year DESC, COALESCE(ts.term_no,0) DESC, ts.created_at DESC
+          LIMIT 1
+        """, (student_id, year, year, sel_term_no))
+        return cur.fetchone()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+
 
 
 # ---------- 3) Student lookup API (for auto-fill + guard hint) ----------
@@ -19988,7 +20102,7 @@ def transport_simple_unsubscribe():
             flash("Student not found.", "warning")
             return redirect(url_for("start_payment", student_number=student_number, term=term))
 
-        transport_unsubscribe(stu["id"], route_id)
+        transport_unsubscribe(stu["id"])
         flash("Unsubscribed: transport requirement removed for this term.", "info")
         return redirect(url_for("start_payment", student_number=student_number, term=term))
     except Exception as e:
