@@ -132,6 +132,12 @@
 
             <a href="{{ url_for('students_finance_report') }}" class="btn btn-outline-warning btn-sm"
                data-roles="admin,bursar,headteacher">Students Finance Report</a>
+			   
+			<a href="{{ url_for('fee_reports.payments_report') }}"
+			   class="btn btn-outline-warning btn-sm"
+			   data-roles="admin,bursar,director,headteacher">
+			   Payments History Report
+			</a>
 
             <a href="{{ url_for('performance_summary') }}" class="btn btn-outline-warning btn-sm"
                data-roles="admin,headteacher,dos,teacher,bursar">Perfomance Summary</a>

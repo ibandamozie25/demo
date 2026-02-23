@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h4>Payments History Report</h4>
+
+  <form class="row g-3 mt-2" method="get" action="{{ url_for('fee_reports.payments_report') }}">
+    <div class="col-md-4">
+      <label class="form-label">Class</label>
+      <select class="form-select" name="class_name" required>
+        <option value="">-- Select class --</option>
+        {% for c in classes %}
+          <option value="{{ c }}" {% if c == class_name %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">From date</label>
+      <input type="date" class="form-control" name="date_from" value="{{ date_from }}" required>
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">To date</label>
+      <input type="date" class="form-control" name="date_to" value="{{ date_to }}" required>
+    </div>
+
+    <div class="col-md-2 d-flex align-items-end gap-2">
+      <button class="btn btn-primary w-100" type="submit">Load</button>
+    </div>
+  </form>
+
+  {% if class_name and date_from and date_to %}
+    <div class="d-flex justify-content-between align-items-center mt-3">
+      <div class="text-muted">
+        Showing: <b>{{ class_name }}</b> | {{ date_from }} → {{ date_to }} |
+        Records: <b>{{ rows|length }}</b>
+      </div>
+
+      <a class="btn btn-success"
+         href="{{ url_for('fee_reports.payments_report_csv', class_name=class_name, date_from=date_from, date_to=date_to) }}">
+        Export CSV
+      </a>
+    </div>
+  {% endif %}
+
+  <div class="table-responsive mt-3">
+    <table class="table table-sm table-bordered table-hover align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>#</th>
+          <th>Student No</th>
+          <th>Student Name</th>
+          <th>Class</th>
+          <th>Section</th>
+          <th>Date Paid</th>
+          <th>Year</th>
+          <th>Term</th>
+          <th>Type</th>
+          <th>Item</th>
+          <th>Requirement</th>
+          <th class="text-end">Amount Paid</th>
+          <th>Receipt</th>
+          <th>Method</th>
+          <th>Recorded By</th>
+          <th>Comment</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ r.student_number }}</td>
+          <td>{{ r.student_name }}</td>
+          <td>{{ r.class_name }}</td>
+          <td>{{ r.section }}</td>
+          <td>{{ r.date_paid }}</td>
+          <td>{{ r.year }}</td>
+          <td>{{ r.term }}</td>
+          <td>{{ r.payment_type }}</td>
+          <td>{{ r.payment_item }}</td>
+          <td>{{ r.requirement_name }}</td>
+          <td class="text-end">{{ "{:,.0f}".format(r.amount_paid or 0) }}</td>
+          <td>{{ r.receipt_no }}</td>
+          <td>{{ r.method }}</td>
+          <td>{{ r.recorded_by }}</td>
+          <td>{{ r.comment }}</td>
+        </tr>
+        {% endfor %}
+
+        {% if rows|length == 0 %}
+        <tr>
+          <td colspan="16" class="text-center text-muted py-4">No records found.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
