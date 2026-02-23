@@ -66,7 +66,7 @@ import math
 import csv
 import os, time
 from werkzeug.utils import secure_filename
-from reports.reports import fee_reports
+
 
 # 1) Load_dotenv before anything else
 load_dotenv()
@@ -9540,6 +9540,8 @@ def create_app():
         static_folder="static",
         static_url_path="/static",  # serve /static/... URLs
     )
+    from reports.reports import fee_reports
+    app.register_blueprint(fee_reports)
 
     # ---- load config by env
     env = os.getenv("FLASK_ENV", "production").lower()
@@ -9562,7 +9564,7 @@ def create_app():
         if request.path.startswith("/static/"):
             return None
             
-    app.register_blueprint(fee_reports)
+    
 
     return app
 
