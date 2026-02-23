@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, request, Response, flash
-from flask_login import login_required
+from sec_app import login_required
 import csv
 import io
 from db import get_db_connection
