@@ -9562,7 +9562,7 @@ def create_app():
         if request.path.startswith("/static/"):
             return None
             
-    app.register_blueprint(fee_reports),
+    app.register_blueprint(fee_reports)
 
     return app
 
