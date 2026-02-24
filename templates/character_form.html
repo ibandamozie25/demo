@@ -100,7 +100,7 @@
       {% if session.get("role") in ["admin", "headteacher", "dos"] %}
       <a
         class="btn btn-sm btn-outline-dark"
-        href="/admin/character-items?term={{ term|urlencode }}&class_name={{ (student.class_name or '')|urlencode }}"
+        href="{{url_for('admin_character_items',term=term,class_name=student.class_name)}}"
       >
         ⚙ Manage Character Items
       </a>
