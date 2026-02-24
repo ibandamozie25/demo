@@ -24312,87 +24312,60 @@ def competency_checklist_batch_pdf():
 @app.route("/character_form", methods=["GET", "POST"])
 @require_role("admin", "headteacher", "teacher", "class_teacher", "deputyheadteacher", "dos", "bursar", "classmanager")
 def character_form():
-    """
-    Single-learner character assessment form.
-    URL style:
-      /character_form?student_id=123&term=Term+3&year=2025
-    """
     ay = get_active_academic_year() or {}
 
-    # ---- student id ----
     sid_raw = request.args.get("student_id") or request.form.get("student_id")
     if not sid_raw or not str(sid_raw).isdigit():
         flash("Missing or invalid learner.", "danger")
         return redirect(url_for("students"))
     student_id = int(sid_raw)
 
-    # ---- term & year ----
-    raw_term = (
-        request.values.get("term")
-        or ay.get("current_term")
-        or ay.get("term")
-        or "Term 1"
-    )
+    raw_term = (request.values.get("term") or ay.get("current_term") or ay.get("term") or "Term 1")
     term = (raw_term or "Term 1").strip()
-    raw_year = (
-        request.values.get("year")
-        or ay.get("year")
-        or ay.get("active_year")
-        or datetime.now().year
-    )
+
+    raw_year = (request.values.get("year") or ay.get("year") or ay.get("active_year") or datetime.now().year)
     try:
         year = int(raw_year)
     except (TypeError, ValueError):
         year = int(ay.get("year") or datetime.now().year)
 
-    # ---- master items ----
-    items = _fetch_character_items(term, student.get("class_name"))
+    # ✅ FETCH STUDENT EARLY (so it's always defined)
+    student = _fetch_student_basic(student_id)
+    if not student:
+        flash("Learner not found.", "danger")
+        return redirect(url_for("students"))
+
+    # ✅ ITEMS EARLY TOO
+    items = _fetch_character_items()
     if not items:
         flash("No character assessment items defined yet.", "warning")
 
-    # ========================= POST: SAVE =========================
+    # ================= POST =================
     if request.method == "POST":
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
 
-        # 1) per-item levels
         for item in items:
             key = f"level_{item['id']}"
             level = (request.form.get(key) or "").strip()
             if not level:
-                # delete row if now empty
-                cur.execute(
-                    """
+                cur.execute("""
                     DELETE FROM character_scores
-                    WHERE student_id = %s AND term = %s AND year = %s AND item_id = %s
-                    """,
-                    (student_id, term, year, item["id"]),
-                )
+                    WHERE student_id=%s AND term=%s AND year=%s AND item_id=%s
+                """, (student_id, term, year, item["id"]))
             else:
-                # upsert level (full phrase from REMARK_OPTIONS)
-                cur.execute(
-                    """
-                    INSERT INTO character_scores
-                        (student_id, term, year, item_id, level)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        level = VALUES(level)
-                    """,
-                    (student_id, term, year, item["id"], level),
-                )
+                cur.execute("""
+                    INSERT INTO character_scores (student_id, term, year, item_id, level)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE level=VALUES(level)
+                """, (student_id, term, year, item["id"], level))
 
-        # 2) meta info
         class_comment = (request.form.get("class_teacher_comment") or "").strip()
         head_comment = (request.form.get("head_teacher_comment") or "").strip()
-
-        # combined comment from bands (one line per role)
         overall_custom = (request.form.get("overall_custom") or "").strip()
+
         if overall_custom:
-            lines = [
-                l.strip()
-                for l in overall_custom.splitlines()
-                if l.strip()
-            ]
+            lines = [l.strip() for l in overall_custom.splitlines() if l.strip()]
             for l in lines:
                 low = l.lower()
                 if low.startswith("class teacher:"):
@@ -24402,138 +24375,66 @@ def character_form():
 
         next_term_begin = request.form.get("next_term_begin") or None
         next_term_end = request.form.get("next_term_end") or None
-        fees = (request.form.get("school_fees") or "").strip()
-        fees_dc = (request.form.get("school_fees_daycare") or "").strip()
         special = (request.form.get("special_communication") or "").strip()
 
-        cur.execute(
-            """
+        cur.execute("""
             INSERT INTO character_meta
-                (student_id, term, year,
-                 class_teacher_comment, head_teacher_comment,
-                 next_term_begin, next_term_end,
-                 school_fees, school_fees_daycare, special_communication)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              (student_id, term, year, class_teacher_comment, head_teacher_comment,
+               next_term_begin, next_term_end, special_communication)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
-                class_teacher_comment = VALUES(class_teacher_comment),
-                head_teacher_comment = VALUES(head_teacher_comment),
-                next_term_begin = VALUES(next_term_begin),
-                next_term_end = VALUES(next_term_end),
-                school_fees = VALUES(school_fees),
-                school_fees_daycare = VALUES(school_fees_daycare),
-                special_communication = VALUES(special_communication)
-            """,
-            (
-                student_id,
-                term,
-                year,
-                class_comment,
-                head_comment,
-                next_term_begin,
-                next_term_end,
-                fees,
-                fees_dc,
-                special,
-            ),
-        )
+              class_teacher_comment=VALUES(class_teacher_comment),
+              head_teacher_comment=VALUES(head_teacher_comment),
+              next_term_begin=VALUES(next_term_begin),
+              next_term_end=VALUES(next_term_end),
+              special_communication=VALUES(special_communication)
+        """, (student_id, term, year, class_comment, head_comment, next_term_begin, next_term_end, special))
+
         conn.commit()
         cur.close()
         conn.close()
 
         flash("Character assessment saved.", "success")
-        return redirect(
-            url_for(
-                "character_form",
-                student_id=student_id,
-                term=term,
-                year=year,
-            )
-        )
+        return redirect(url_for("character_form", student_id=student_id, term=term, year=year))
 
-    # ========================= GET: LOAD =========================
-    student = _fetch_student_basic(student_id)
-    if not student:
-        flash("Learner not found.", "danger")
-        return redirect(url_for("students"))
-
+    # ================= GET =================
     scores_map = _fetch_character_scores_map(student_id, term, year)
-
     meta = _fetch_character_meta(student_id, term, year) or {}
 
-    # normalise dates for template (avoid datetime[:10] TypeError)
-    if meta.get("next_term_begin"):
-        val = meta["next_term_begin"]
-        if hasattr(val, "strftime"):
-            meta["next_term_begin"] = val.strftime("%Y-%m-%d")
-    if meta.get("next_term_end"):
-        val = meta["next_term_end"]
-        if hasattr(val, "strftime"):
-            meta["next_term_end"] = val.strftime("%Y-%m-%d")
+    # normalize dates
+    for k in ("next_term_begin", "next_term_end"):
+        if meta.get(k) and hasattr(meta[k], "strftime"):
+            meta[k] = meta[k].strftime("%Y-%m-%d")
 
-    conn = get_db_connection()
+    # any override logic here is now safe because student exists
 
-    # ---------- 1) auto-fill SPECIAL COMMUNICATION from overall overrides ----------
-    try:
-        overrides = fetch_overall_overrides(conn, student_id, term, year)
-    except Exception:
-        overrides = {}
-
-    if overrides and not (meta.get("special_communication") or "").strip():
-        meta["special_communication"] = (
-            overrides.get("special_communication") or meta.get("special_communication") or ""
-        )
-
-    # ---------- 2) auto-fill NEXT TERM DATES from term-dates helper ----------
-    try:
-        nti = get_next_term_info(term, year) # same helper you use for EOT reports
-    except Exception:
-        nti = None
-
-    if nti:
-        if not (meta.get("next_term_begin") or "").strip():
-            meta["next_term_begin"] = nti.get("next_term_date") or meta.get("next_term_begin")
-        if not (meta.get("next_term_end") or "").strip():
-            meta["next_term_end"] = nti.get("next_term_end_date") or meta.get("next_term_end")
-
-    # REUSE REMARK_OPTIONS as dropdown list
     level_options = list(REMARK_OPTIONS)
 
-    # keep existing comment-library logic
+    conn = get_db_connection()
     teacher_library, head_library = load_comment_library_groups(conn)
     conn.close()
 
-
-    # ---------- simple prev / next navigation within same class & stream ----------
+    # prev/next
     prev_id = None
     next_id = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            """
+        cur.execute("""
             SELECT id FROM students
-            WHERE class_name = %s AND stream = %s AND id < %s
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (student.get("class_name"), student.get("stream"), student_id),
-        )
+            WHERE class_name=%s AND stream=%s AND id < %s
+            ORDER BY id DESC LIMIT 1
+        """, (student.get("class_name"), student.get("stream"), student_id))
         row = cur.fetchone()
-        if row:
-            prev_id = row[0]
+        if row: prev_id = row[0]
 
-        cur.execute(
-            """
+        cur.execute("""
             SELECT id FROM students
-            WHERE class_name = %s AND stream = %s AND id > %s
-            ORDER BY id ASC
-            LIMIT 1
-            """,
-            (student.get("class_name"), student.get("stream"), student_id),
-        )
+            WHERE class_name=%s AND stream=%s AND id > %s
+            ORDER BY id ASC LIMIT 1
+        """, (student.get("class_name"), student.get("stream"), student_id))
         row = cur.fetchone()
-        if row:
-            next_id = row[0]
+        if row: next_id = row[0]
 
         cur.close()
         conn.close()
