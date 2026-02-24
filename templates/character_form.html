@@ -306,15 +306,6 @@ Headteacher: {{ meta.head_teacher_comment or '' }}{% endif %}</textarea>
           Download Character PDF
         </a>
 
-        {% if session.get("role") in ["admin", "headteacher", "dos", "classmanager", "classteacher"] %}
-        <a
-          class="btn btn-outline-dark btn-sm"
-          href="/admin/character-items?term={{ term|urlencode }}&class_name={{ (student.class_name or '')|urlencode }}"
-        >
-          ⚙ Manage Items
-        </a>
-        {% endif %}
-
         <button type="submit" class="btn btn-primary btn-sm">
           Save Character Assessment
         </button>
