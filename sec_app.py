@@ -24310,30 +24310,23 @@ def competency_checklist_batch_pdf():
 
 #=========================X-TER ASSESSMENT========================
 @app.route("/character_form", methods=["GET", "POST"])
-@require_role("admin", "headteacher", "teacher", "class_teacher",
-              "deputyheadteacher", "dos", "bursar", "classmanager")
+@require_role("admin", "headteacher", "teacher", "class_teacher", "deputyheadteacher", "dos", "bursar", "classmanager")
 def character_form():
     """
     Single-learner character assessment form.
-
     URL style:
       /character_form?student_id=123&term=Term+3&year=2025
     """
-
-    # -------------------------
-    # 0) Resolve student_id safely
-    # -------------------------
     ay = get_active_academic_year() or {}
 
-    sid_raw = request.values.get("student_id")
+    # ---- student id (always required) ----
+    sid_raw = request.args.get("student_id") or request.form.get("student_id")
     if not sid_raw or not str(sid_raw).isdigit():
         flash("Missing or invalid learner.", "danger")
         return redirect(url_for("students"))
     student_id = int(sid_raw)
 
-    # -------------------------
-    # 1) Resolve term/year safely
-    # -------------------------
+    # ---- term & year ----
     raw_term = (
         request.values.get("term")
         or ay.get("current_term")
@@ -24353,172 +24346,153 @@ def character_form():
     except (TypeError, ValueError):
         year = int(ay.get("year") or datetime.now().year)
 
-    # -------------------------
-    # 2) ALWAYS load student early (fixes UnboundLocalError)
-    # -------------------------
+    # ✅ IMPORTANT: fetch student BEFORE using student.class_name anywhere
     student = _fetch_student_basic(student_id)
     if not student:
         flash("Learner not found.", "danger")
         return redirect(url_for("students"))
 
-    # -------------------------
-    # 3) Load items (later you can filter per term here)
-    # -------------------------
+    # ✅ Term-based items (and optionally class-based)
     items = _fetch_character_items(term, student.get("class_name"))
     if not items:
-        flash("No character assessment items defined yet.", "warning")
+        flash("No character assessment items defined for this term/class.", "warning")
 
-    # -------------------------
-    # 4) POST: Save (scores + meta)
-    # -------------------------
+    # ========================= POST: SAVE =========================
     if request.method == "POST":
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        try:
-            # 4.1 Save per-item levels
-            for item in items:
-                item_id = item["id"]
-                key = f"level_{item_id}"
-                level = (request.form.get(key) or "").strip()
 
-                if not level:
-                    # delete if blank
-                    cur.execute(
-                        """
-                        DELETE FROM character_scores
-                        WHERE student_id=%s AND term=%s AND year=%s AND item_id=%s
-                        """,
-                        (student_id, term, year, item_id),
-                    )
-                else:
-                    # upsert
-                    cur.execute(
-                        """
-                        INSERT INTO character_scores (student_id, term, year, item_id, level)
-                        VALUES (%s,%s,%s,%s,%s)
-                        ON DUPLICATE KEY UPDATE level = VALUES(level)
-                        """,
-                        (student_id, term, year, item_id, level),
-                    )
+        # 1) per-item levels
+        for item in items:
+            key = f"level_{item['id']}"
+            level = (request.form.get(key) or "").strip()
 
-            # 4.2 Meta fields
-            class_comment = (request.form.get("class_teacher_comment") or "").strip()
-            head_comment = (request.form.get("head_teacher_comment") or "").strip()
+            if not level:
+                cur.execute(
+                    """
+                    DELETE FROM character_scores
+                    WHERE student_id = %s AND term = %s AND year = %s AND item_id = %s
+                    """,
+                    (student_id, term, year, item["id"]),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO character_scores (student_id, term, year, item_id, level)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE level = VALUES(level)
+                    """,
+                    (student_id, term, year, item["id"], level),
+                )
 
-            # combined comment box logic (your existing behavior)
-            overall_custom = (request.form.get("overall_custom") or "").strip()
-            if overall_custom:
-                lines = [l.strip() for l in overall_custom.splitlines() if l.strip()]
-                for l in lines:
-                    low = l.lower()
-                    if low.startswith("class teacher:") or low.startswith("class manager:"):
-                        class_comment = l.split(":", 1)[1].strip()
-                    elif low.startswith("headteacher:") or low.startswith("head teacher:"):
-                        head_comment = l.split(":", 1)[1].strip()
+        # 2) meta info
+        class_comment = (request.form.get("class_teacher_comment") or "").strip()
+        head_comment = (request.form.get("head_teacher_comment") or "").strip()
 
-            next_term_begin = request.form.get("next_term_begin") or None
-            next_term_end = request.form.get("next_term_end") or None
+        # combined comment box parsing
+        overall_custom = (request.form.get("overall_custom") or "").strip()
+        if overall_custom:
+            lines = [l.strip() for l in overall_custom.splitlines() if l.strip()]
+            for l in lines:
+                low = l.lower()
+                if low.startswith("class manager:") or low.startswith("class teacher:"):
+                    class_comment = l.split(":", 1)[1].strip()
+                elif low.startswith("headteacher:") or low.startswith("head teacher:"):
+                    head_comment = l.split(":", 1)[1].strip()
 
-            fees = (request.form.get("school_fees") or "").strip()
-            fees_dc = (request.form.get("school_fees_daycare") or "").strip()
-            special = (request.form.get("special_communication") or "").strip()
+        next_term_begin = request.form.get("next_term_begin") or None
+        next_term_end = request.form.get("next_term_end") or None
 
-            cur.execute(
-                """
-                INSERT INTO character_meta
-                    (student_id, term, year,
-                     class_teacher_comment, head_teacher_comment,
-                     next_term_begin, next_term_end,
-                     school_fees, school_fees_daycare, special_communication)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE
-                    class_teacher_comment = VALUES(class_teacher_comment),
-                    head_teacher_comment = VALUES(head_teacher_comment),
-                    next_term_begin = VALUES(next_term_begin),
-                    next_term_end = VALUES(next_term_end),
-                    school_fees = VALUES(school_fees),
-                    school_fees_daycare = VALUES(school_fees_daycare),
-                    special_communication = VALUES(special_communication)
-                """,
-                (
-                    student_id, term, year,
-                    class_comment, head_comment,
-                    next_term_begin, next_term_end,
-                    fees, fees_dc, special,
-                ),
-            )
+        fees = (request.form.get("school_fees") or "").strip()
+        fees_dc = (request.form.get("school_fees_daycare") or "").strip()
+        special = (request.form.get("special_communication") or "").strip()
 
-            conn.commit()
-            flash("Character assessment saved.", "success")
-        except Exception as e:
-            conn.rollback()
-            flash(f"Failed to save character assessment: {e}", "danger")
-        finally:
-            cur.close()
-            conn.close()
+        cur.execute(
+            """
+            INSERT INTO character_meta
+                (student_id, term, year,
+                 class_teacher_comment, head_teacher_comment,
+                 next_term_begin, next_term_end,
+                 school_fees, school_fees_daycare, special_communication)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+                class_teacher_comment = VALUES(class_teacher_comment),
+                head_teacher_comment = VALUES(head_teacher_comment),
+                next_term_begin = VALUES(next_term_begin),
+                next_term_end = VALUES(next_term_end),
+                school_fees = VALUES(school_fees),
+                school_fees_daycare = VALUES(school_fees_daycare),
+                special_communication = VALUES(special_communication)
+            """,
+            (
+                student_id, term, year,
+                class_comment, head_comment,
+                next_term_begin, next_term_end,
+                fees, fees_dc, special,
+            ),
+        )
 
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        flash("Character assessment saved.", "success")
         return redirect(url_for("character_form", student_id=student_id, term=term, year=year))
 
-    # -------------------------
-    # 5) GET: Load scores + meta
-    # -------------------------
+    # ========================= GET: LOAD =========================
     scores_map = _fetch_character_scores_map(student_id, term, year)
     meta = _fetch_character_meta(student_id, term, year) or {}
 
     # normalize dates for template slicing
-    for k in ("next_term_begin", "next_term_end"):
-        if meta.get(k):
-            v = meta[k]
-            if hasattr(v, "strftime"):
-                meta[k] = v.strftime("%Y-%m-%d")
+    if meta.get("next_term_begin") and hasattr(meta["next_term_begin"], "strftime"):
+        meta["next_term_begin"] = meta["next_term_begin"].strftime("%Y-%m-%d")
+    if meta.get("next_term_end") and hasattr(meta["next_term_end"], "strftime"):
+        meta["next_term_end"] = meta["next_term_end"].strftime("%Y-%m-%d")
 
-    # -------------------------
-    # 6) Enrich meta: overrides + next term helper + comment library
-    # (keeps your existing logic)
-    # -------------------------
     conn = get_db_connection()
+
+    # 1) auto-fill SPECIAL COMMUNICATION from overrides
     try:
-        # 6.1 overrides -> special_communication (only if meta is empty)
-        try:
-            overrides = fetch_overall_overrides(conn, student_id, term, year) or {}
-        except Exception:
-            overrides = {}
+        overrides = fetch_overall_overrides(conn, student_id, term, year)
+    except Exception:
+        overrides = {}
 
-        if overrides and not (meta.get("special_communication") or "").strip():
-            meta["special_communication"] = overrides.get("special_communication") or ""
+    if overrides and not (meta.get("special_communication") or "").strip():
+        meta["special_communication"] = (
+            overrides.get("special_communication")
+            or meta.get("special_communication")
+            or ""
+        )
 
-        # 6.2 next term helper -> dates (only if empty)
-        try:
-            nti = get_next_term_info(term, year)
-        except Exception:
-            nti = None
+    # 2) auto-fill NEXT TERM DATES from helper
+    try:
+        nti = get_next_term_info(term, year)
+    except Exception:
+        nti = None
 
-        if nti:
-            if not (meta.get("next_term_begin") or "").strip():
-                meta["next_term_begin"] = nti.get("next_term_date") or meta.get("next_term_begin")
-            if not (meta.get("next_term_end") or "").strip():
-                meta["next_term_end"] = nti.get("next_term_end_date") or meta.get("next_term_end")
-
-        # 6.3 comment libraries
-        teacher_library, head_library = load_comment_library_groups(conn)
-
-    finally:
-        conn.close()
+    if nti:
+        if not (meta.get("next_term_begin") or "").strip():
+            meta["next_term_begin"] = nti.get("next_term_date") or meta.get("next_term_begin")
+        if not (meta.get("next_term_end") or "").strip():
+            meta["next_term_end"] = nti.get("next_term_end_date") or meta.get("next_term_end")
 
     level_options = list(REMARK_OPTIONS)
 
-    # -------------------------
-    # 7) Prev/Next navigation (safe)
-    # -------------------------
+    # comment libraries (unchanged)
+    teacher_library, head_library = load_comment_library_groups(conn)
+    conn.close()
+
+    # prev / next within same class & stream
     prev_id = None
     next_id = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+
         cur.execute(
             """
             SELECT id FROM students
-            WHERE class_name=%s AND stream=%s AND id < %s
+            WHERE class_name = %s AND stream = %s AND id < %s
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -24531,7 +24505,7 @@ def character_form():
         cur.execute(
             """
             SELECT id FROM students
-            WHERE class_name=%s AND stream=%s AND id > %s
+            WHERE class_name = %s AND stream = %s AND id > %s
             ORDER BY id ASC
             LIMIT 1
             """,
@@ -24540,15 +24514,12 @@ def character_form():
         row = cur.fetchone()
         if row:
             next_id = row[0]
+
+        cur.close()
+        conn.close()
     except Exception:
         prev_id = None
         next_id = None
-    finally:
-        try:
-            cur.close()
-            conn.close()
-        except Exception:
-            pass
 
     return render_template(
         "character_form.html",
