@@ -19,8 +19,7 @@
       <input name="class_name" class="form-control form-control-sm" value="{{class_name}}" placeholder="e.g Baby">
       <div class="form-text">Leave blank to manage items for all classes.</div>
     </div>
-     <a
-
+	
       <a class="btn btn-sm btn-outline-secondary"
          href="{{ url_for('reports_hub',
                           class_name=request.args.get('class_name', student.class_name),
