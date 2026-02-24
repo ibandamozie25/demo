@@ -97,7 +97,7 @@
       </a>
 
       {# Admin manage link (safe: direct URL so template won't crash if endpoint name differs) #}
-      {% if current_user.role in ["admin", "headteacher"] %}
+      {% if session.get("role") in ["admin", "headteacher", "dos"] %}
       <a
         class="btn btn-sm btn-outline-dark"
         href="/admin/character-items?term={{ term|urlencode }}&class_name={{ (student.class_name or '')|urlencode }}"
