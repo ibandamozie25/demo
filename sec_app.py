@@ -24574,7 +24574,7 @@ def character_pdf():
         flash("Learner not found.", "danger")
         return redirect(url_for("students"))
 
-    items = _fetch_character_items()
+    items = _fetch_character_items(term, student.get("class_name"))
     scores_map = _fetch_character_scores_map(student_id, term, year)
     meta = _fetch_character_meta(student_id, term, year)
 
