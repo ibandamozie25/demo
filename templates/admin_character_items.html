@@ -97,7 +97,7 @@
               </select>
             </td>
 
-            <td><input name="class_name" class="form-control form-control-sm" value="{{(it.class_name or '') if it.class_name else 'ALL'}}"></td>
+            <td><input name="class_name" class="form-control form-control-sm" value="{{(it.class_name| default('ALL',true}}"></td>
 
             <td><input name="skill_label" class="form-control form-control-sm" value="{{it.skill_label}}"></td>
             <td><input name="description" class="form-control form-control-sm" value="{{it.description}}"></td>
