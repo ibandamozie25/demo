@@ -20,8 +20,13 @@
       <div class="form-text">Leave blank to manage items for all classes.</div>
     </div>
      <a
-        class="btn btn-sm btn-outline-dark"
-        href="{{url_for('character_form', student_id=student_id, term=term, year=year)}}"> Back to Character Form
+
+	 <a class="btn btn-sm btn-outline-secondary"
+         href="{{ url_for('reports_hub',
+                          class_name=request.args.get('class_name', student.class_name),
+                          term=request.args.get('term', term),
+                          year=request.args.get('year', year)) }}">
+        &larr; Reports
       </a>
 	  
     <div class="col-md-6 d-flex align-items-end gap-2">
