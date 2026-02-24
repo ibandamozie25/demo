@@ -24634,7 +24634,7 @@ def character_batch_pdf():
             )
         )
 
-    items = _fetch_character_items()
+    items = _fetch_character_items(term, class_name)
 
     import io
     from reportlab.pdfgen import canvas
