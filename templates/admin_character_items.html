@@ -21,7 +21,7 @@
     </div>
      <a
         class="btn btn-sm btn-outline-dark"
-        href="{{url_for('character_form)}}"> Back to Character Form
+        href="{{url_for('character_form')}}"> Back to Character Form
       </a>
     <div class="col-md-6 d-flex align-items-end gap-2">
       <button class="btn btn-sm btn-primary">Load</button>
@@ -97,7 +97,7 @@
               </select>
             </td>
 
-            <td><input name="class_name" class="form-control form-control-sm" value="{{(it.class_name if it.class_name else 'ALL'}}"></td>
+            <td><input name="class_name" class="form-control form-control-sm" value="{{it.class_name if it.class_name else 'ALL'}}"></td>
 
             <td><input name="skill_label" class="form-control form-control-sm" value="{{it.skill_label}}"></td>
             <td><input name="description" class="form-control form-control-sm" value="{{it.description}}"></td>
