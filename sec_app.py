@@ -24620,7 +24620,8 @@ def character_batch_pdf():
         year = int(raw_year)
     except (TypeError, ValueError):
         year = int(ay.get("year") or datetime.now().year)
-
+    raw_class = (request.form.get("class_name") or "").strip()
+    class_name = None if (raw_class == "" or raw_class.upper() == "ALL") else raw_class
     raw_ids = request.form.getlist("selected_ids")
     student_ids = [int(s.strip()) for s in raw_ids if s and s.strip().isdigit()]
     if not student_ids:
