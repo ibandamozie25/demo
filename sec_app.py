@@ -3541,22 +3541,41 @@ def _fetch_student_basic(student_id: int):
     conn.close()
     return row
 
+def _term_to_no(term: str) -> int:
+    # supports "Term 1", "Term 2", "Term 3"
+    m = re.search(r"(\d+)", term or "")
+    n = int(m.group(1)) if m else 1
+    return n if n in (1, 2, 3) else 1
 
-def _fetch_character_items():
-    """All character items in display order."""
+def _fetch_character_items(term: str, class_name: str | None = None):
+    """
+    Term-based items.
+    - item.term_no can be NULL => usable in any term
+    - item.class_name can be NULL => usable in any class
+    """
+    term_no = _term_to_no(term)
+
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
+
     cur.execute(
         """
-        SELECT id, area, section, skill_label, description
+        SELECT id, area, section, term_no, class_name, skill_label, description, sort_order, is_active
         FROM character_items
+        WHERE is_active = 1
+          AND (term_no = %s OR term_no IS NULL)
+          AND (%s IS NULL OR class_name IS NULL OR class_name = %s)
         ORDER BY area, section, sort_order, id
-        """
+        """,
+        (term_no, class_name, class_name),
     )
+
     rows = cur.fetchall() or []
     cur.close()
     conn.close()
     return rows
+
+
 
 
 def _fetch_character_scores_map(student_id: int, term: str, year: int):
@@ -24327,7 +24346,7 @@ def character_form():
         year = int(ay.get("year") or datetime.now().year)
 
     # ---- master items ----
-    items = _fetch_character_items()
+    items = _fetch_character_items(term, student.get("class_name"))
     if not items:
         flash("No character assessment items defined yet.", "warning")
 
@@ -24659,6 +24678,100 @@ def character_batch_pdf():
         download_name=filename,
         mimetype="application/pdf",
     )
+    
+    
+@app.route("/admin/character_items", methods=["GET", "POST"])
+@require_role("admin", "headteacher")
+def admin_character_items():
+    term = (request.values.get("term") or "Term 1").strip()
+    term_no = _term_to_no(term)
+    class_name = (request.values.get("class_name") or "").strip() or None
+
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        if action == "add":
+            area = (request.form.get("area") or "").strip()
+            section = (request.form.get("section") or "").strip() or None
+            skill_label = (request.form.get("skill_label") or "").strip()
+            description = (request.form.get("description") or "").strip()
+            sort_order = int(request.form.get("sort_order") or 0)
+            is_active = 1 if request.form.get("is_active") else 0
+            # "ALL" option => NULL in DB
+            term_no_in = request.form.get("term_no")
+            term_no_db = None if term_no_in == "ALL" else int(term_no_in)
+            class_in = (request.form.get("class_name") or "").strip()
+            class_db = None if class_in == "ALL" or class_in == "" else class_in
+
+            cur.execute(
+                """
+                INSERT INTO character_items (area, section, term_no, class_name, skill_label, description, sort_order, is_active)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (area, section, term_no_db, class_db, skill_label, description, sort_order, is_active),
+            )
+
+        elif action == "update":
+            item_id = int(request.form["id"])
+            area = (request.form.get("area") or "").strip()
+            section = (request.form.get("section") or "").strip() or None
+            skill_label = (request.form.get("skill_label") or "").strip()
+            description = (request.form.get("description") or "").strip()
+            sort_order = int(request.form.get("sort_order") or 0)
+            is_active = 1 if request.form.get("is_active") else 0
+
+            term_no_in = request.form.get("term_no")
+            term_no_db = None if term_no_in == "ALL" else int(term_no_in)
+            class_in = (request.form.get("class_name") or "").strip()
+            class_db = None if class_in == "ALL" or class_in == "" else class_in
+
+            cur.execute(
+                """
+                UPDATE character_items
+                SET area=%s, section=%s, term_no=%s, class_name=%s,
+                    skill_label=%s, description=%s, sort_order=%s, is_active=%s
+                WHERE id=%s
+                """,
+                (area, section, term_no_db, class_db, skill_label, description, sort_order, is_active, item_id),
+            )
+
+        elif action == "delete":
+            item_id = int(request.form["id"])
+            # safer than hard delete:
+            cur.execute("UPDATE character_items SET is_active=0 WHERE id=%s", (item_id,))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        flash("Saved.", "success")
+        return redirect(url_for("admin_character_items", term=term, class_name=class_name or ""))
+
+    # GET: list items for filter
+    items = _fetch_character_items(term, class_name)
+
+    return render_template(
+        "admin_character_items.html",
+        items=items,
+        term=term,
+        term_no=term_no,
+        class_name=class_name or "",
+    )
+    
+    
+@app.get("/api/character_items")
+@require_role("admin","headteacher","teacher","class_teacher","deputyheadteacher","dos","bursar","classmanager")
+def api_character_items():
+    term = (request.args.get("term") or "Term 1").strip()
+    class_name = (request.args.get("class_name") or "").strip() or None
+    items = _fetch_character_items(term, class_name)
+    return {"items": items}
+
+    
+
 
 #======================X-TER ASSESSMENT ENDS=============================================
 
