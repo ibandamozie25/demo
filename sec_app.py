@@ -24364,7 +24364,7 @@ def character_form():
     # -------------------------
     # 3) Load items (later you can filter per term here)
     # -------------------------
-    items = _fetch_character_items()
+    items = _fetch_character_items(term, student.get("class_name"))
     if not items:
         flash("No character assessment items defined yet.", "warning")
 
