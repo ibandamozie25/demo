@@ -5794,51 +5794,75 @@ def compute_overall_for_student(conn, student_id, term, year):
     
 
 
-def load_comment_library_groups(conn):
+def load_comment_library_groups(conn=None):
     """
-    Load teacher + headteacher overall comments from comment_library
-    and group them by performance band.
+    Loads teacher + headteacher overall comments from comment_library,
+    grouped by performance band: excellent / moderate / poor.
 
-    Returns: (teacher_lib, head_lib)
-      teacher_lib = {"excellent": [...], "moderate": [...], "poor": [...]}
-      head_lib = same structure
+    Works even when conn is None OR conn is stale (dropped/closed).
     """
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT id, category, text, role, scope, uses
-        FROM comment_library
-        WHERE scope = 'overall' AND role IN ('teacher','headteacher')
-        ORDER BY category, id
-    """)
-    rows = cur.fetchall() or []
-    cur.close()
 
     def blank_groups():
         return {"excellent": [], "moderate": [], "poor": []}
 
+    close_conn = False
+    if conn is None:
+        conn = get_conn()
+        close_conn = True
+    else:
+        # If you passed a dead connection, reopen a fresh one
+        try:
+            if hasattr(conn, "is_connected") and (not conn.is_connected()):
+                conn = get_conn()
+                close_conn = True
+        except Exception:
+            conn = get_conn()
+            close_conn = True
+
     teacher_lib = blank_groups()
     head_lib = blank_groups()
 
-    for r in rows:
-        # map DB category -> band key
-        cat = (r.get("category") or "").lower()
-        if cat == "good":
-            band = "excellent"
-        elif cat == "moderate":
-            band = "moderate"
-        elif cat == "poor":
-            band = "poor"
-        else:
-            continue
+    cur = None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT id, category, text, role, scope, uses
+            FROM comment_library
+            WHERE scope = 'overall'
+              AND role IN ('teacher','headteacher')
+            ORDER BY category, id
+        """)
+        rows = cur.fetchall() or []
 
-        text = r["text"] or ""
-        if not text:
-            continue
+        for r in rows:
+            cat = (r.get("category") or "").strip().lower()
 
-        target = teacher_lib if r["role"] == "teacher" else head_lib
-        target[band].append(text)
+            # accept both styles: good/excellent, average/moderate, poor
+            if cat in ("good", "excellent", "excellence"):
+                band = "excellent"
+            elif cat in ("moderate", "average", "fair", "mid"):
+                band = "moderate"
+            elif cat in ("poor", "weak", "low"):
+                band = "poor"
+            else:
+                continue
 
-    return teacher_lib, head_lib
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
+
+            target = teacher_lib if (r.get("role") == "teacher") else head_lib
+            target[band].append(text)
+
+        return teacher_lib, head_lib
+
+    finally:
+        if cur:
+            try: cur.close()
+            except Exception: pass
+        if close_conn:
+            try: conn.close()
+            except Exception: pass
 
 
 def pick_comment_template(
