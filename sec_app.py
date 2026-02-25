@@ -5813,10 +5813,10 @@ def load_comment_library_groups(conn=None):
         # If you passed a dead connection, reopen a fresh one
         try:
             if hasattr(conn, "is_connected") and (not conn.is_connected()):
-                conn = get_conn()
+                conn = get_db_connection()
                 close_conn = True
         except Exception:
-            conn = get_conn()
+            conn = get_db_connection()
             close_conn = True
 
     teacher_lib = blank_groups()
