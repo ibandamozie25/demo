@@ -1334,6 +1334,29 @@ def get_recommendation_options(conn):
 # ------------------ SCHEMA ENSURE KINDERGARTEN ------------------ #
 
 # ------------------ KINDERGARTEN HELPERS ------------------ #
+
+def ensure_robotics_checklist_items_schema(conn):
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS robotics_checklist_items (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      area VARCHAR(64) NOT NULL,
+      area_code VARCHAR(8) NOT NULL,
+      section VARCHAR(64) NOT NULL,
+      label VARCHAR(120) NOT NULL,
+      competence TEXT NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_area (area_code, area, section),
+      INDEX idx_active (is_active),
+      INDEX idx_sort (sort_order)
+    )
+    """)
+    conn.commit()
+    cur.close()
+
 def ensure_robotics_checklist_item_terms_schema(conn):
     ensure_robotics_checklist_items_schema(conn)
     cur = conn.cursor()
