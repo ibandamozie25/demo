@@ -22695,7 +22695,7 @@ def competency_checklist(student_id):
 
     # dropdowns (keep your existing logic)
     overall_options = RECOMMENDATION_OPTIONS[:]  # or your dynamic list
-    teacher_library, head_library = load_comment_library_groups(conn)
+    teacher_library, head_library = load_comment_library_groups()
 
     if request.method == "POST":
         # delete old saved for this period
@@ -24575,7 +24575,7 @@ def character_form():
     level_options = list(REMARK_OPTIONS)
 
     # comment libraries (unchanged)
-    teacher_library, head_library = load_comment_library_groups(conn)
+    teacher_library, head_library = load_comment_library_groups()
     conn.close()
 
     # prev / next within same class & stream
