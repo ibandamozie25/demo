@@ -1417,7 +1417,6 @@ def _fetch_checklist_items_for_term(conn, term: str, year: int):
     Only items assigned to selected term and (year is NULL or year=selected year).
     """
     ensure_robotics_checklist_item_terms_schema(conn)
-
     cur = conn.cursor(dictionary=True)
     cur.execute("""
       SELECT i.id, i.area, i.area_code, i.section, i.label, i.competence, i.sort_order
@@ -1433,11 +1432,16 @@ def _fetch_checklist_items_for_term(conn, term: str, year: int):
     cur.close()
     return rows
 
-def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int):
+def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int, conn=None):
     """
     Returns: { item_id: {'tick':0/1, 'remark': ''} }
+    Can reuse an existing conn. If conn not passed, it opens/closes safely.
     """
-    conn = get_db_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_db_connection()
+        close_conn = True
+
     ensure_robotics_checklist_schema(conn)
     cur = conn.cursor(dictionary=True)
     saved = {}
@@ -1451,8 +1455,500 @@ def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int):
             saved[int(r["item_id"])] = {"tick": int(r["tick"]), "remark": r["remark"]}
     finally:
         cur.close()
-        conn.close()
+        if close_conn:
+            conn.close()
+
     return saved
+    
+    
+def _load_checklist_meta_for_pdf(conn, student_id: int, term: str, year: int):
+    """
+    Loads meta and optionally fills next_term_begin/end from term_dates if missing.
+    """
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT overall_remark, special_communication,
+               next_term_begin, next_term_end,
+               school_fees, school_fees_daycare
+        FROM robotics_checklist_meta
+        WHERE student_id=%s AND term=%s AND year=%s
+    """, (student_id, term, year))
+    meta = cur.fetchone() or {}
+
+    # Optional: pick dates from term_dates if missing (doesn't overwrite existing)
+    try:
+        ensure_term_dates_schema(conn)
+        cur.execute("""
+            SELECT next_term_date, next_term_end_date
+            FROM term_dates
+            WHERE year=%s AND term=%s
+            LIMIT 1
+        """, (year, term))
+        td = cur.fetchone() or {}
+
+        from datetime import datetime as _dt
+        if not meta.get("next_term_begin") and td.get("next_term_date"):
+            try:
+                meta["next_term_begin"] = _dt.strptime(td["next_term_date"], "%Y-%m-%d").date()
+            except Exception:
+                pass
+
+        if not meta.get("next_term_end") and td.get("next_term_end_date"):
+            try:
+                meta["next_term_end"] = _dt.strptime(td["next_term_end_date"], "%Y-%m-%d").date()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    cur.close()
+    return meta
+
+
+def _build_checklist_table_data(items, saved_map, p_head, p_skill, p_section, p_comp, p_rem):
+    """
+    Builds (data, row_meta) using dict-items and saved_map keyed by item_id,
+    while preserving your display and area/section grouping logic.
+    """
+    data = [[
+        Paragraph("Area", p_head),
+        Paragraph("Skill", p_head),
+        Paragraph("Competence", p_head),
+        Paragraph("✓", p_head),
+        Paragraph("Remarks", p_head),
+    ]]
+    row_meta = [{"type": "header"}]
+
+    last_area = None
+    last_section = None
+
+    for it in items:
+        item_id = int(it["id"])
+        area = (it.get("area") or "").strip()
+        section = (it.get("section") or "").strip()
+        label = (it.get("label") or "").strip()
+        comp = (it.get("competence") or "").strip()
+
+        saved = saved_map.get(item_id, {})
+        tick = bool(saved.get("tick"))
+        remark_txt = (saved.get("remark") or "").strip()
+
+        # Area marker row
+        if area != last_area:
+            data.append(["", "", "", "", ""])
+            row_meta.append({"type": "area", "area": area})
+            last_area = area
+            last_section = None
+
+        # Section row
+        if section and section != last_section:
+            data.append(["", Paragraph(section, p_section), "", "", ""])
+            row_meta.append({"type": "section", "area": area, "section": section})
+            last_section = section
+
+        # Skill row
+        data.append([
+            "", # area column filled by your icon vertical draw helper
+            Paragraph(label, p_skill),
+            Paragraph(comp, p_comp),
+            "✔" if tick else "",
+            Paragraph(remark_txt, p_rem) if remark_txt else "",
+        ])
+        row_meta.append({"type": "skill", "area": area, "section": section, "label": label})
+
+    return data, row_meta
+
+
+def _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map, meta):
+    """
+    Draws ONE student's checklist PDF onto the existing canvas 'c'.
+    Keeps your branded header/table/remarks layout intact.
+    """
+
+    width, height = A4
+    left = 40
+    bottom_margin = 60
+
+    # =================== HEADER STRIP ===================
+    banner_h = 30 * mm
+    banner_y = height - 35 * mm
+    left_margin, right_margin = left, left
+    strip_w = width - left_margin - right_margin
+    navy_w = strip_w * 0.73
+    blue_w = strip_w - navy_w
+
+    c.saveState()
+    c.setFillColor(COL_NAVY)
+    c.rect(left_margin, banner_y, navy_w, banner_h, stroke=0, fill=1)
+    c.setFillColor(COL_BLUE)
+    c.rect(left_margin + navy_w, banner_y, blue_w, banner_h, stroke=0, fill=1)
+
+    fold_depth = 11 * mm
+    fold_lip = 6 * mm
+    c.setFillColor(COL_BLUE2)
+    ps = c.beginPath()
+    ps.moveTo(left_margin + navy_w, banner_y)
+    ps.lineTo(left_margin + navy_w + fold_depth, banner_y + banner_h)
+    ps.lineTo(left_margin + navy_w + fold_depth + 2 * mm, banner_y + banner_h)
+    ps.lineTo(left_margin + navy_w + 2 * mm, banner_y)
+    ps.close()
+    c.drawPath(ps, stroke=0, fill=1)
+
+    flap_col = colors.HexColor("#3a86e0")
+    c.setFillColor(flap_col)
+    pf = c.beginPath()
+    pf.moveTo(left_margin + navy_w - fold_lip, banner_y)
+    pf.lineTo(left_margin + navy_w, banner_y)
+    pf.lineTo(left_margin + navy_w + fold_depth, banner_y + banner_h)
+    pf.lineTo(left_margin + navy_w - fold_lip, banner_y + banner_h)
+    pf.close()
+    c.drawPath(pf, stroke=0, fill=1)
+
+    SCHOOL_LOGO_PATH = os.path.join(current_app.static_folder, "logo.jpg")
+    logo_box = 24 * mm
+    logo_x = left_margin + 6 * mm
+    logo_y = banner_y + (banner_h - logo_box) / 2
+    if os.path.exists(SCHOOL_LOGO_PATH):
+        try:
+            c.drawImage(SCHOOL_LOGO_PATH, logo_x, logo_y, width=logo_box, height=logo_box,
+                        preserveAspectRatio=True, mask="auto")
+        except Exception:
+            pass
+
+    name_left = logo_x + logo_box + 6 * mm
+    name_right = left_margin + navy_w - 6 * mm
+    name_box_w = max(10, name_right - name_left)
+    center_x = (name_left + name_right) / 2.0
+
+    name_text = SCHOOL_NAME or ""
+    name_fs = 18
+    while name_fs >= 10 and c.stringWidth(name_text, "Helvetica-Bold", name_fs) > name_box_w:
+        name_fs -= 1
+
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", name_fs)
+    name_y = banner_y + banner_h - 5 * mm
+    c.drawCentredString(center_x, name_y, name_text)
+
+    sub_text = SCHOOL_SUB or ""
+    addr_text = SCHOOL_ADDRESS or ""
+
+    if sub_text:
+        sub_fs = 12
+        while sub_fs >= 8 and c.stringWidth(sub_text, "Helvetica-Bold", sub_fs) > name_box_w:
+            sub_fs -= 1
+        c.setFont("Helvetica-Bold", sub_fs)
+        tagline_y = name_y - (name_fs * 1.15)
+        c.drawCentredString(center_x, tagline_y, sub_text)
+    else:
+        sub_fs = 10
+        tagline_y = name_y
+
+    if addr_text:
+        addr_fs = max(8, (sub_fs - 1) if sub_text else 10)
+        c.setFont("Helvetica-Bold", addr_fs)
+        addr_y = tagline_y - (addr_fs * 1.1)
+        c.drawCentredString(center_x, addr_y, addr_text)
+
+    # Contacts (right)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica", 9)
+    right_pad = 6 * mm
+    text_right = left_margin + strip_w - right_pad
+    line_gap = 5.5 * mm
+    y_cursor = banner_y + banner_h - 8 * mm
+
+    raw = SCHOOL_PHONE_LINES or ""
+    combined = ", ".join(str(p) for p in raw) if isinstance(raw, (list, tuple)) else str(raw)
+    phone_lines = [p.strip() for p in combined.split(",") if p.strip()]
+
+    for ph in phone_lines:
+        c.drawRightString(text_right, y_cursor, ph)
+        y_cursor -= line_gap
+
+    if SCHOOL_EMAIL:
+        y_cursor -= 2.5 * mm
+        c.drawRightString(text_right, y_cursor, SCHOOL_EMAIL)
+
+    c.restoreState()
+
+    # =================== LEARNER INFO ===================
+    info_top = banner_y - 6 * mm
+    info_left = left_margin
+    info_width = width - left_margin - right_margin - (40 * mm)
+
+    styles = getSampleStyleSheet()
+    lab = ParagraphStyle("lab", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=11)
+    val = ParagraphStyle("val", parent=styles["Normal"], fontName="Helvetica", fontSize=9, leading=11)
+
+    full_name = f"{student.get('first_name','')} {student.get('middle_name','')} {student.get('last_name','')}".strip()
+
+    info_rows = [
+        [Paragraph("Learner's Name:", lab), Paragraph(full_name or "-", val)],
+        [Paragraph("Student No.:", lab), Paragraph(student.get("student_number") or "-", val)],
+        [Paragraph("Class / Stream:", lab),
+         Paragraph(f"{student.get('class_name','-')} {student.get('stream','') or ''}", val)],
+        [Paragraph("Term / Year:", lab), Paragraph(f"{term} / {year}", val)],
+    ]
+
+    info_tbl = Table(info_rows, colWidths=[35 * mm, info_width - 35 * mm], hAlign="LEFT")
+    info_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+    ]))
+    w_info, h_info = info_tbl.wrapOn(c, info_width, 9999)
+    info_tbl.drawOn(c, info_left, info_top - h_info)
+
+    # Photo box
+    box_w = box_h = 32 * mm
+    photo_x = width - right_margin - box_w
+    photo_y = info_top - (h_info - box_h) / 2
+
+    photo_blob = student.get("photo_blob")
+    photo_path = student.get("photo")
+
+    if photo_blob:
+        try:
+            img_reader = ImageReader(io.BytesIO(photo_blob))
+            c.drawImage(img_reader, photo_x + 2, photo_y - box_h + 2, box_w - 4, box_h - 4,
+                        preserveAspectRatio=True, mask="auto")
+        except Exception:
+            pass
+    elif photo_path:
+        full_path = os.path.join(current_app.root_path, photo_path) if not os.path.isabs(photo_path) else photo_path
+        if os.path.exists(full_path):
+            try:
+                img_reader = ImageReader(full_path)
+                c.drawImage(img_reader, photo_x + 2, photo_y - box_h + 2, box_w - 4, box_h - 4,
+                            preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+    else:
+        c.setStrokeColor(colors.grey)
+        c.rect(photo_x, photo_y - box_h, box_w, box_h, stroke=1, fill=0)
+        c.setFont("Helvetica", 7)
+        c.drawCentredString(photo_x + box_w / 2, photo_y - box_h / 2, "Photo")
+
+    # Title
+    title_y = (info_top - h_info) - 6 * mm
+    c.setFont("Helvetica-Bold", 13)
+    c.setFillColor(colors.black)
+    c.drawString(left, title_y, "Learner's Competency Checklist [Early Childhood]")
+    table_top = title_y - 6 * mm
+
+    # =================== TABLE STYLES ===================
+    col_area_w = 26 * mm
+    col_skill_w = 32 * mm
+    col_tick_w = 8 * mm
+    col_rem_w = 36 * mm
+    col_comp_w = width - left * 2 - col_area_w - col_skill_w - col_tick_w - col_rem_w
+
+    p_head = ParagraphStyle("head", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9,
+                            alignment=1, textColor=colors.white)
+    p_skill = ParagraphStyle("skill", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=9)
+    p_section = ParagraphStyle("section", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8, leading=9)
+    p_comp = ParagraphStyle("comp", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=9)
+    p_rem = ParagraphStyle("rem", parent=styles["Normal"], fontName="Helvetica", fontSize=7, leading=8)
+
+    data, row_meta = _build_checklist_table_data(items, saved_map, p_head, p_skill, p_section, p_comp, p_rem)
+
+    base_table = Table(
+        data,
+        colWidths=[col_area_w, col_skill_w, col_comp_w, col_tick_w, col_rem_w],
+        repeatRows=0
+    )
+    ts = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.0, 0.45, 0.80)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.lightgrey),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.75, colors.lightgrey),
+        ("GRID", (1, 1), (-1, -1), 0.25, colors.lightgrey),
+        ("LINEAFTER", (0, 0), (0, -1), 0.75, colors.lightgrey),
+        ("ALIGN", (3, 1), (3, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+    ])
+
+    # Bold section labels
+    for i in range(1, len(data)):
+        if row_meta[i]["type"] == "section":
+            ts.add("FONT", (1, i), (1, i), "Helvetica-Bold", 8)
+
+    base_table.setStyle(ts)
+
+    avail_height_first = table_top - bottom_margin
+    base_table.wrapOn(c, width - left * 2, avail_height_first)
+    full_rows = base_table._cellvalues
+    full_heights = list(base_table._rowHeights)
+
+    # =================== PAGINATION (AREA BLOCK SAFE) ===================
+    pages = []
+    header_row = full_rows[0]
+    header_meta = row_meta[0]
+
+    max_height = avail_height_first
+    cur_rows = [header_row]
+    cur_meta = [header_meta]
+    cur_height = full_heights[0]
+
+    i = 1
+    while i < len(full_rows):
+        meta_i = row_meta[i]
+        if meta_i.get("type") == "area":
+            start = i
+            j = i
+            while j + 1 < len(full_rows) and row_meta[j + 1].get("type") != "area":
+                j += 1
+        else:
+            start = i
+            j = i
+
+        block_rows = full_rows[start:j + 1]
+        block_meta = row_meta[start:j + 1]
+        block_height = sum(full_heights[k] for k in range(start, j + 1))
+
+        if cur_height + block_height > max_height and len(cur_rows) > 1:
+            pages.append((cur_rows, cur_meta))
+            cur_rows = [header_row]
+            cur_meta = [header_meta]
+            cur_height = full_heights[0]
+            max_height = height - 80
+
+        cur_rows.extend(block_rows)
+        cur_meta.extend(block_meta)
+        cur_height += block_height
+        i = j + 1
+
+    pages.append((cur_rows, cur_meta))
+
+    # =================== DRAW PAGES ===================
+    last_table_y = table_top
+    carry_area = None
+
+    try:
+        base_cmds = list(ts.getCommands())
+    except AttributeError:
+        base_cmds = list(ts._cmds)
+
+    for page_index, (page_rows, page_meta) in enumerate(pages):
+        if page_index == 0:
+            top_y = table_top
+        else:
+            c.showPage()
+            top_y = height - 60
+            c.setFont("Helvetica-Bold", 10)
+            c.setFillColor(colors.black)
+            c.drawString(left, top_y, "Learner's Competency Checklist (continued)")
+            top_y -= 16
+
+        page_table = Table(
+            page_rows,
+            colWidths=[col_area_w, col_skill_w, col_comp_w, col_tick_w, col_rem_w],
+            repeatRows=1
+        )
+
+        extra_cmds = []
+        for r_i, meta_row in enumerate(page_meta):
+            if meta_row.get("type") == "area":
+                extra_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), colors.HexColor("#bfbfbf")))
+                extra_cmds.append(("TEXTCOLOR", (0, r_i), (-1, r_i), colors.white))
+                extra_cmds.append(("LINEABOVE", (0, r_i), (-1, r_i), 0.9, colors.black))
+                extra_cmds.append(("LINEBELOW", (0, r_i), (-1, r_i), 0.9, colors.black))
+
+        page_table.setStyle(TableStyle(base_cmds + extra_cmds))
+
+        avail_h = top_y - bottom_margin
+        w, h = page_table.wrapOn(c, width - left * 2, avail_h)
+        table_y = top_y - h
+
+        row_heights = list(page_table._rowHeights)
+
+        area_ranges = _compute_area_ranges_from_meta(page_meta, previous_area=carry_area)
+
+        _draw_area_icons_vertical(
+            c=c,
+            left=left,
+            table_y=table_y,
+            row_heights=row_heights,
+            col_area_w=col_area_w,
+            area_ranges=area_ranges,
+        )
+
+        page_table.drawOn(c, left, table_y)
+        last_table_y = table_y
+
+        for m in page_meta:
+            if m.get("type") == "area":
+                carry_area = m.get("area")
+
+    # =================== REMARKS ===================
+    remarks_y = last_table_y - 24
+    if remarks_y < 120:
+        c.showPage()
+        remarks_y = height - 120
+
+    raw_name = (session.get("full_name") or session.get("username") or "").strip()
+    if raw_name:
+        parts = raw_name.split()
+        if len(parts) >= 2:
+            raw_name = f"{parts[0]} {parts[-1]}"
+    prepared_name = f"Tr. {raw_name}" if raw_name else "Tr. __________________"
+    today_str = datetime.now().strftime("%d-%b-%Y")
+
+    overall = (meta.get("overall_remark") or "").strip()
+    overall_html = (overall or " ").replace("\n", "<br/>")
+
+    sc = (meta.get("special_communication") or "").strip()
+    ntb = meta.get("next_term_begin")
+    nte = meta.get("next_term_end")
+
+    ntb_str = ntb.strftime("%d/%m/%y") if ntb else "__________"
+    nte_str = nte.strftime("%d/%m/%y") if nte else "__________"
+
+    h_style = ParagraphStyle("bottom_head", parent=styles["Normal"], fontName="Helvetica-Bold",
+                             fontSize=9, textColor=colors.white, alignment=0)
+    label_style = ParagraphStyle("bottom_label", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8)
+    text_style = ParagraphStyle("bottom_text", parent=styles["Normal"], fontName="Helvetica",
+                                fontSize=8, leading=10)
+
+    bottom_data = [
+        [Paragraph("Remarks & Recommendations to the learner:", h_style), ""],
+        [Paragraph(overall_html, text_style), ""],
+        [Paragraph("Special Communication:", label_style), Paragraph(sc or " ", text_style)],
+        [Paragraph("Next term begins on:", label_style),
+         Paragraph(f"{ntb_str} will end on: {nte_str}", text_style)],
+        [Paragraph("Prepared by:", label_style), Paragraph(prepared_name, text_style)],
+        [Paragraph("Date:", label_style), Paragraph(today_str, text_style)],
+    ]
+
+    bottom_table = Table(bottom_data, colWidths=[(width - 2 * left) * 0.28, (width - 2 * left) * 0.72])
+    bt = TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.lightgrey),
+        ("GRID", (0, 2), (-1, -1), 0.25, colors.lightgrey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.0, 0.45, 0.80)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+    ])
+    bt.add("SPAN", (0, 0), (-1, 0))
+    bt.add("SPAN", (0, 1), (-1, 1))
+    bottom_table.setStyle(bt)
+
+    bw, bh = bottom_table.wrapOn(c, width - 2 * left, remarks_y - 40)
+    bottom_y = remarks_y - bh
+    bottom_table.drawOn(c, left, bottom_y)
+
+    c.showPage()
+
+
 
 def _fetch_checklist_items():
     """
@@ -22639,7 +23135,6 @@ def mark_sheet_pdf_reportlab():
 @app.route("/reports/competency_checklist/<int:student_id>", methods=["GET", "POST"])
 @require_role("admin", "headteacher", "bursar", "teacher", "classmanager", "deputyheadteacher")
 def competency_checklist(student_id):
-
     ay = get_active_academic_year() or {}
     current_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
     current_year = int(ay.get("year") or datetime.now().year)
@@ -22651,155 +23146,121 @@ def competency_checklist(student_id):
         year = current_year
 
     conn = get_db_connection()
+    ensure_robotics_checklist_schema(conn)
+    ensure_robotics_checklist_meta_schema(conn)
+    ensure_robotics_checklist_item_terms_schema(conn)
 
-    try:
-        ensure_robotics_checklist_schema(conn)
-        ensure_robotics_checklist_meta_schema(conn)
-        ensure_robotics_checklist_item_terms_schema(conn)
+    cur = conn.cursor(dictionary=True)
 
-        cur = conn.cursor(dictionary=True)
+    # ---------- student ----------
+    cur.execute("""
+        SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
+               last_name, class_name, stream, section
+        FROM students
+        WHERE id=%s
+    """, (student_id,))
+    student = cur.fetchone()
+    if not student:
+        cur.close()
+        conn.close()
+        flash("Student not found.", "warning")
+        return redirect(url_for("students"))
 
-        # ---------- student ----------
+    # ---------- checklist items for THIS term/year ----------
+    conn = get_db_connection()
+    items = _fetch_checklist_items_for_term(conn, term, year)
+    conn.close()  # list of dicts
+
+    # saved ticks/remarks for this term/year
+    saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
+
+    # meta (your existing meta method is fine)
+    meta = _fetch_checklist_meta(student_id, term, year)
+
+    # dropdowns (keep your existing logic)
+    overall_options = RECOMMENDATION_OPTIONS[:]  # or your dynamic list
+    teacher_library, head_library = load_comment_library_groups()
+
+    if request.method == "POST":
+        # delete old saved for this period
         cur.execute("""
-            SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
-                   last_name, class_name, stream, section
-            FROM students
-            WHERE id=%s
-        """, (student_id,))
-        student = cur.fetchone()
+            DELETE FROM robotics_checklist
+            WHERE student_id=%s AND term=%s AND year=%s
+        """, (student_id, term, year))
 
-        if not student:
-            flash("Student not found.", "warning")
-            return redirect(url_for("students"))
-
-        # ---------- prev / next student ----------
-        cur.execute("""
-            SELECT id FROM students
-            WHERE id < %s
-            ORDER BY id DESC
-            LIMIT 1
-        """, (student_id,))
-        prev_row = cur.fetchone()
-
-        cur.execute("""
-            SELECT id FROM students
-            WHERE id > %s
-            ORDER BY id ASC
-            LIMIT 1
-        """, (student_id,))
-        next_row = cur.fetchone()
-
-        prev_id = prev_row["id"] if prev_row else None
-        next_id = next_row["id"] if next_row else None
-
-        # ---------- checklist items ----------
-        items = _fetch_checklist_items_for_term(conn, term, year)
-        saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
-        meta = _fetch_checklist_meta(student_id, term, year)
-
-        overall_options = RECOMMENDATION_OPTIONS[:]
-        teacher_library, head_library = load_comment_library_groups()
-
-        # ==========================================================
-        # ======================= POST =============================
-        # ==========================================================
-        if request.method == "POST":
-
-            # delete old checklist
-            cur.execute("""
-                DELETE FROM robotics_checklist
-                WHERE student_id=%s AND term=%s AND year=%s
-            """, (student_id, term, year))
-
-            # insert checklist items
-            for it in items:
-                item_id = int(it["id"])
-                tick_val = 1 if request.form.get(f"tick_{item_id}") == "on" else 0
-                remark_val = (request.form.get(f"remark_{item_id}") or "").strip()
-
-                cur.execute("""
-                    INSERT INTO robotics_checklist
-                        (student_id, term, year, item_id, tick, remark)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                """, (student_id, term, year, item_id, tick_val, remark_val or None))
-
-            # ---------- meta ----------
-            def _parse_date(val: str):
-                try:
-                    return datetime.strptime(val, "%Y-%m-%d").date()
-                except Exception:
-                    return None
-
-            overall = ((request.form.get("overall_custom") or "").strip()
-                       or (request.form.get("overall_remark") or "").strip())
-            special = (request.form.get("special_communication") or "").strip()
-            nb = _parse_date((request.form.get("next_term_begin") or "").strip())
-            ne = _parse_date((request.form.get("next_term_end") or "").strip())
-            fees = (request.form.get("school_fees") or "").strip()
-            fees_dc = (request.form.get("school_fees_daycare") or "").strip()
+        # save each item by item_id
+        for it in items:
+            item_id = int(it["id"])
+            tick_val = 1 if request.form.get(f"tick_{item_id}") == "on" else 0
+            remark_val = (request.form.get(f"remark_{item_id}") or "").strip()
 
             cur.execute("""
-                DELETE FROM robotics_checklist_meta
-                WHERE student_id=%s AND term=%s AND year=%s
-            """, (student_id, term, year))
+                INSERT INTO robotics_checklist (student_id, term, year, item_id, tick, remark)
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (student_id, term, year, item_id, tick_val, remark_val or None))
 
-            cur.execute("""
-                INSERT INTO robotics_checklist_meta
-                    (student_id, term, year, overall_remark, special_communication,
-                     next_term_begin, next_term_end, school_fees, school_fees_daycare)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """, (
-                student_id, term, year,
-                overall or None, special or None,
-                nb, ne,
-                fees or None, fees_dc or None
-            ))
+        # ---------- save meta (same as you had) ----------
+        def _parse_date(val: str):
+            try:
+                return datetime.strptime(val, "%Y-%m-%d").date()
+            except Exception:
+                return None
 
-            conn.commit()
+        overall = ((request.form.get("overall_custom") or "").strip()
+                   or (request.form.get("overall_remark") or "").strip())
+        special = (request.form.get("special_communication") or "").strip()
+        nb = _parse_date((request.form.get("next_term_begin") or "").strip())
+        ne = _parse_date((request.form.get("next_term_end") or "").strip())
+        fees = (request.form.get("school_fees") or "").strip()
+        fees_dc = (request.form.get("school_fees_daycare") or "").strip()
 
-            flash("Checklist saved.", "success")
-            return redirect(url_for(
-                "competency_checklist",
-                student_id=student_id,
-                term=term,
-                year=year
-            ))
+        cur.execute("""
+            DELETE FROM robotics_checklist_meta
+            WHERE student_id=%s AND term=%s AND year=%s
+        """, (student_id, term, year))
+        cur.execute("""
+            INSERT INTO robotics_checklist_meta
+                (student_id, term, year, overall_remark, special_communication,
+                 next_term_begin, next_term_end, school_fees, school_fees_daycare)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            student_id, term, year,
+            overall or None, special or None,
+            nb, ne,
+            fees or None, fees_dc or None
+        ))
 
-        # ==========================================================
-        # ======================= GET ==============================
-        # ==========================================================
+        conn.commit()
+        cur.close()
+        conn.close()
+        flash("Checklist saved.", "success")
+        return redirect(url_for("competency_checklist", student_id=student_id, term=term, year=year))
 
-        # format dates for input fields
-        if meta.get("next_term_begin"):
-            meta["next_term_begin"] = meta["next_term_begin"].strftime("%Y-%m-%d")
-        if meta.get("next_term_end"):
-            meta["next_term_end"] = meta["next_term_end"].strftime("%Y-%m-%d")
+    cur.close()
+    conn.close()
 
-        return render_template(
-            "competency_checklist_form.html",
-            student=student,
-            term=term,
-            year=year,
-            items=items,
-            saved_map=saved_map,
-            remark_options=REMARK_OPTIONS,
-            overall_options=overall_options,
-            meta=meta,
-            teacher_library=teacher_library,
-            head_library=head_library,
-            prev_id=prev_id,
-            next_id=next_id,
-        )
+    # format dates for inputs
+    if meta.get("next_term_begin"):
+        meta["next_term_begin"] = meta["next_term_begin"].strftime("%Y-%m-%d")
+    if meta.get("next_term_end"):
+        meta["next_t erm_end"] = meta["next_term_end"].strftime("%Y-%m-%d")
 
-    finally:
-        try:
-            cur.close()
-        except:
-            pass
-        try:
-            conn.close()
-        except:
-            pass
+    return render_template(
+        "competency_checklist_form.html",
+        student=student,
+        term=term,
+        year=year,
+        items=items,                 # list of dicts now
+        saved_map=saved_map,         # item_id -> {tick, remark}
+        remark_options=REMARK_OPTIONS,
+        overall_options=overall_options,
+        meta=meta,
+        prev_id=prev_id,
+        next_id=next_id,
+        teacher_library=teacher_library,
+        head_library=head_library,
+    )
+
 
 
 
@@ -22913,25 +23374,83 @@ def admin_checklist_items():
 # ------------------ ROUTE: KINDERGARTEN PDF REPORT ------------------ #
 
 
-@app.route("/reports/competency_checklist_pdf/<int:student_id>")
-@require_role("admin", "headteacher", "teacher", "class_teacher", "bursar", "classmanager")
-def competency_checklist_pdf(student_id):
-    # ---- resolve term/year ----
+@app.route("/reports/competency_checklist_batch_pdf", methods=["POST"])
+@require_role('admin', 'headteacher', 'bursar', 'dos', 'deputyheadteacher', 'classmanager', 'teacher')
+def competency_checklist_batch_pdf():
     ay = get_active_academic_year() or {}
-    term = (
-        request.args.get("term")
+
+    raw_term = (
+        request.form.get("term")
+        or request.form.get("termsel")
         or ay.get("current_term")
         or ay.get("term")
         or "Term 1"
-    ).strip()
-    year = int(
-        request.args.get("year")
+    )
+    term = (raw_term or "Term 1").strip()
+
+    raw_year = (
+        request.form.get("year")
+        or request.form.get("yearsel")
         or ay.get("year")
         or ay.get("active_year")
         or datetime.now().year
     )
+    try:
+        year = int(raw_year)
+    except (TypeError, ValueError):
+        year = int(ay.get("year") or datetime.now().year)
 
-    # ---- student ----
+    raw_ids = request.form.getlist("selected_ids")
+    student_ids = []
+    for sid in raw_ids:
+        sid = (sid or "").strip()
+        if sid.isdigit():
+            student_ids.append(int(sid))
+
+    if not student_ids:
+        flash("Please select at least one learner first.", "warning")
+        return redirect(url_for(
+            "reports_hub",
+            class_name=request.form.get("class_name", ""),
+            term=term,
+            year=year,
+        ))
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+
+    for student_id in student_ids:
+        student = _fetch_student_for_checklist(student_id)
+        if not student:
+            continue
+
+        conn = get_db_connection()
+        try:
+            items = _fetch_checklist_items_for_term(conn, term, year)
+            saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year, conn=conn)
+            meta = _load_checklist_meta_for_pdf(conn, student_id, term, year)
+        finally:
+            conn.close()
+
+        _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map, meta)
+
+    c.save()
+    buf.seek(0)
+    filename = f"Checklist_Batch_{term}_{year}.pdf".replace(" ", "_")
+    return send_file(buf, as_attachment=True, download_name=filename, mimetype="application/pdf")
+
+
+@app.route("/reports/competency_checklist_pdf/<int:student_id>")
+@require_role("admin", "headteacher", "teacher", "class_teacher", "bursar", "classmanager")
+def competency_checklist_pdf(student_id):
+    ay = get_active_academic_year() or {}
+    term = (request.args.get("term") or ay.get("current_term") or ay.get("term") or "Term 1").strip()
+
+    try:
+        year = int(request.args.get("year") or ay.get("year") or ay.get("active_year") or datetime.now().year)
+    except Exception:
+        year = int(ay.get("year") or datetime.now().year)
+
     student = _fetch_student_for_checklist(student_id)
     if not student:
         buf = io.BytesIO()
@@ -22939,683 +23458,25 @@ def competency_checklist_pdf(student_id):
         c.drawString(40, 800, "Student not found.")
         c.save()
         buf.seek(0)
-        return send_file(
-            buf,
-            as_attachment=True,
-            download_name="checklist_missing.pdf",
-        )
-    
-    # ---- items & saved ticks/remarks ----
+        return send_file(buf, as_attachment=True, download_name="checklist_missing.pdf", mimetype="application/pdf")
+
     conn = get_db_connection()
-    items = _fetch_checklist_items_for_term(conn, term, year)
-    conn.close()
-    saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
-    # key: (area, section, label, competence) -> {'tick': bool, 'remark': text}
-    
-
-    # ---- load meta (overall remark, special comms, dates, fees) ----
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-
-    # 1) Existing meta (remarks, fees, and possibly dates)
-    cur.execute(
-        """
-        SELECT overall_remark, special_communication,
-               next_term_begin, next_term_end,
-               school_fees, school_fees_daycare
-        FROM robotics_checklist_meta
-        WHERE student_id=%s AND term=%s AND year=%s
-        """,
-        (student_id, term, year),
-    )
-    meta = cur.fetchone() or {}
-
-    # 2) Auto-pick dates from term_dates if missing
-    # (does NOT override existing meta dates)
     try:
-        ensure_term_dates_schema(conn)
-    except Exception:
-        pass # if helper fails, just fall back to whatever is in meta
+        items = _fetch_checklist_items_for_term(conn, term, year)
+        saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year, conn=conn)
+        meta = _load_checklist_meta_for_pdf(conn, student_id, term, year)
+    finally:
+        conn.close()
 
-    cur.execute(
-        """
-        SELECT next_term_date, next_term_end_date
-        FROM term_dates
-        WHERE year=%s AND term=%s
-        LIMIT 1
-        """,
-        (year, term),
-    )
-    td = cur.fetchone() or {}
-
-    from datetime import datetime as _dt
-
-    if not meta.get("next_term_begin") and td.get("next_term_date"):
-        try:
-            meta["next_term_begin"] = _dt.strptime(
-                td["next_term_date"], "%Y-%m-%d"
-            ).date()
-        except Exception:
-            # if parsing fails, leave it out; footer logic stays unchanged
-            pass
-
-    if not meta.get("next_term_end") and td.get("next_term_end_date"):
-        try:
-            meta["next_term_end"] = _dt.strptime(
-                td["next_term_end_date"], "%Y-%m-%d"
-            ).date()
-        except Exception:
-            pass
-
-    cur.close()
-    conn.close()
-
-
-    # ---- PDF + HEADER (only page 1) ----
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
 
-    left = 40
-    top = height - 40
-    bottom_margin = 60 # space for footer/remarks
+    _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map, meta)
 
-    # =================== CLEAN BRANDED HEADER (NO ICONS) ===================
-    banner_h = 30 * mm
-    banner_y = height - 35 * mm
-    left_margin, right_margin = left, left
-    strip_w = width - left_margin - right_margin
-    navy_w = strip_w * 0.73
-    blue_w = strip_w - navy_w
-
-    c.saveState()
-    c.setFillColor(COL_NAVY)
-    c.rect(left_margin, banner_y, navy_w, banner_h, stroke=0, fill=1)
-    c.setFillColor(COL_BLUE)
-    c.rect(left_margin + navy_w, banner_y, blue_w, banner_h, stroke=0, fill=1)
-
-    fold_depth = 11 * mm
-    fold_lip = 6 * mm
-    c.setFillColor(COL_BLUE2)
-    ps = c.beginPath()
-    ps.moveTo(left_margin + navy_w, banner_y)
-    ps.lineTo(left_margin + navy_w + fold_depth, banner_y + banner_h)
-    ps.lineTo(left_margin + navy_w + fold_depth + 2 * mm, banner_y + banner_h)
-    ps.lineTo(left_margin + navy_w + 2 * mm, banner_y)
-    ps.close()
-    c.drawPath(ps, stroke=0, fill=1)
-    flap_col = colors.HexColor("#3a86e0")
-    c.setFillColor(flap_col)
-    pf = c.beginPath()
-    pf.moveTo(left_margin + navy_w - fold_lip, banner_y)
-    pf.lineTo(left_margin + navy_w, banner_y)
-    pf.lineTo(left_margin + navy_w + fold_depth, banner_y + banner_h)
-    pf.lineTo(left_margin + navy_w - fold_lip, banner_y + banner_h)
-    pf.close()
-    c.drawPath(pf, stroke=0, fill=1)
-
-    SCHOOL_LOGO_PATH = os.path.join(current_app.static_folder, "logo.jpg")
-    logo_box = 24 * mm
-    logo_x = left_margin + 6 * mm
-    logo_y = banner_y + (banner_h - logo_box) / 2
-    if os.path.exists(SCHOOL_LOGO_PATH):
-        try:
-            c.drawImage(
-                SCHOOL_LOGO_PATH,
-                logo_x,
-                logo_y,
-                width=logo_box,
-                height=logo_box,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-        except Exception:
-            pass
-
-    name_left = logo_x + logo_box + 6 * mm
-    name_right = left_margin + navy_w - 6 * mm
-    name_box_w = max(10, name_right - name_left)
-
-    # centre of the text block (between logo-right & navy-right)
-    center_x = (name_left + name_right) / 2.0
-
-    name_text = SCHOOL_NAME or ""
-    name_fs = 18
-    while (
-        name_fs >= 10
-        and c.stringWidth(name_text, "Helvetica-Bold", name_fs) > name_box_w
-    ):
-        name_fs -= 1
-
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", name_fs)
-    # a bit lower + more room for lines below
-    name_y = banner_y + banner_h - 5 * mm
-    c.drawCentredString(center_x, name_y, name_text)
-
-    sub_text = SCHOOL_SUB or ""
-    addr_text = SCHOOL_ADDRESS or "" # P.O Box line
-
-    # tagline line
-    if sub_text:
-        sub_fs = 12
-        while (
-            sub_fs >= 8
-            and c.stringWidth(sub_text, "Helvetica-Bold", sub_fs) > name_box_w
-        ):
-            sub_fs -= 1
-        c.setFont("Helvetica-Bold", sub_fs)
-        tagline_y = name_y - (name_fs * 1.15) # <- bigger = more spacing
-        c.drawCentredString(center_x, tagline_y, sub_text)
-    else:
-        tagline_y = name_y
-
-    # P.O Box line
-    if addr_text:
-        addr_fs = max(8, (sub_fs - 1) if sub_text else 10)
-        c.setFont("Helvetica-Bold", addr_fs)
-        addr_y = tagline_y - (addr_fs * 1.1) # extra spacing again
-        c.drawCentredString(center_x, addr_y, addr_text)
-    
-    # --- phones: ensure one number per line (3 rows) ---
-
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica", 9)
-    right_pad = 6 * mm
-    text_right = left_margin + strip_w - right_pad
-    line_gap = 5.5 * mm
-    y_cursor = banner_y + banner_h - 8 * mm
-
-    # -------- Contacts block (RIGHT SIDE, one per line) --------
-    raw = SCHOOL_PHONE_LINES or ""
-
-    # Normalize to one comma-separated string first
-    if isinstance(raw, (list, tuple)):
-        combined = ", ".join(str(p) for p in raw)
-    else:
-        combined = str(raw)
-
-    # Now definitely split into separate phone numbers
-    phone_lines = [p.strip() for p in combined.split(",") if p.strip()]
-
-    # draw each phone on its own line
-    for ph in phone_lines:
-        c.drawRightString(text_right, y_cursor, ph)
-        y_cursor -= line_gap
-
-    # small extra gap, then email if present
-    if SCHOOL_EMAIL:
-        y_cursor -= 2.5 * mm
-        c.drawRightString(text_right, y_cursor, SCHOOL_EMAIL)
-
-
-    c.restoreState()
-
-    # ========== LEARNER INFO TABLE (two columns) ==========
-    info_top = banner_y - 6 * mm
-    info_left = left_margin
-    info_width = width - left_margin - right_margin - (40 * mm) # room for photo
-
-    styles = getSampleStyleSheet()
-    lab = ParagraphStyle(
-        "lab",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=11,
-        textColor=colors.black,
-    )
-    val = ParagraphStyle(
-        "val",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        leading=11,
-    )
-
-    full_name = f"{student.get('first_name','')} {student.get('middle_name','')} {student.get('last_name','')}".strip()
-
-    info_rows = [
-        [Paragraph("Learner's Name:", lab), Paragraph(full_name or "-", val)],
-        [Paragraph("Student No.:", lab), Paragraph(student.get("student_number") or "-", val)],
-        [
-            Paragraph("Class / Stream:", lab),
-            Paragraph(f"{student.get('class_name','-')} {student.get('stream','') or ''}", val),
-        ],
-        [Paragraph("Term / Year:", lab), Paragraph(f"{term} / {year}", val)],
-    ]
-
-    info_tbl = Table(
-        info_rows,
-        colWidths=[35 * mm, info_width - 35 * mm],
-        hAlign="LEFT",
-    )
-    info_tbl.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-            ]
-        )
-    )
-    w_info, h_info = info_tbl.wrapOn(c, info_width, 9999)
-    info_tbl.drawOn(c, info_left, info_top - h_info)
-
-    # ---- PHOTO BLOCK (works with DB blob or file path) ----
-    photo_blob = student.get("photo_blob")
-    photo_path = student.get("photo")
-
-    # Your existing box position
-    box_w = box_h = 32 * mm
-    photo_x = width - right_margin - box_w
-    photo_y = info_top - (h_info - box_h) / 2
-
-    if photo_blob:
-        try:
-            img_reader = ImageReader(io.BytesIO(photo_blob))
-            c.drawImage(
-                img_reader,
-                photo_x + 2, photo_y - box_h + 2,
-                box_w - 4, box_h - 4,
-                preserveAspectRatio=True,
-                mask="auto"
-            )
-        except:
-            pass
-
-    elif photo_path:
-        full_path = os.path.join(app.root_path, photo_path)
-        if os.path.exists(full_path):
-            try:
-                img_reader = ImageReader(full_path)
-                c.drawImage(
-                    img_reader,
-                    photo_x + 2, photo_y - box_h + 2,
-                    box_w - 4, box_h - 4,
-                    preserveAspectRatio=True,
-                    mask="auto"
-                )
-            except:
-                pass
-
-    else:
-        # placeholder
-        c.setStrokeColor(colors.grey)
-        c.rect(photo_x, photo_y - box_h, box_w, box_h)
-        c.setFont("Helvetica", 7)
-        c.drawCentredString(photo_x + box_w/2, photo_y - box_h/2, "Photo")
-
-
-    # ====== Big title above competence table ======
-    title_y = (info_top - h_info) - 6 * mm
-    c.setFont("Helvetica-Bold", 13)
-    c.setFillColor(colors.black)
-    c.drawString(left, title_y, "Learner's Competency Checklist [Early Childhood]")
-
-    table_top = title_y - 6 * mm
-
-    # ---------- TABLE DATA ----------
-    col_area_w = 26 * mm
-    col_skill_w = 32 * mm
-    col_tick_w = 8 * mm
-    col_rem_w = 36 * mm
-    col_comp_w = width - left * 2 - col_area_w - col_skill_w - col_tick_w - col_rem_w
-
-    styles = getSampleStyleSheet()
-    p_head = ParagraphStyle(
-        "head",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=9,
-        alignment=1,
-        textColor=colors.white,
-    )
-    p_skill = ParagraphStyle(
-        "skill",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=8,
-        leading=9,
-    )
-    p_section = ParagraphStyle(
-        "section",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=8,
-        leading=9,
-    )
-    p_comp = ParagraphStyle(
-        "comp",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=8,
-        leading=9,
-    )
-    p_rem = ParagraphStyle(
-        "rem",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=7,
-        leading=8,
-    )
-
-    data = [
-        [
-            Paragraph("Area", p_head),
-            Paragraph("Competence", p_head),
-            Paragraph("Skill", p_head),
-            Paragraph("✓", p_head),
-            Paragraph("Remarks", p_head),
-        ]
-    ]
-    row_meta = [{"type": "header"}]
-    collected_remarks = []
-    last_area = None
-    last_section = None
-    area_dividers = []
-
-    for (area, acode, section, label, comp) in items:
-        key = (area, section, label, comp)
-        saved = saved_map.get(key, {})
-        tick = bool(saved.get("tick"))
-        remark_txt = (saved.get("remark") or "").strip()
-
-        if remark_txt:
-            collected_remarks.append(
-                f"{section} - {label}: {remark_txt}"
-                if section
-                else f"{label}: {remark_txt}"
-            )
-
-        # area marker row
-        if area != last_area:
-            data.append(["", "", "", "", ""])
-            row_meta.append({"type": "area", "area": area})
-            area_dividers.append(len(data) - 1)
-            last_area = area
-            last_section = None
-
-        # section row
-        if section and section != last_section:
-            data.append(["", Paragraph(section, p_section), "", "", ""])
-            row_meta.append(
-                {
-                    "type": "section",
-                    "area": area,
-                    "section": section,
-                }
-            )
-            last_section = section
-
-        # skill row
-        data.append(
-            [
-                "",
-                Paragraph(label, p_skill),
-                Paragraph(comp, p_comp),
-                "✔" if tick else "",
-                Paragraph(remark_txt, p_rem) if remark_txt else "",
-            ]
-        )
-        row_meta.append(
-            {
-                "type": "skill",
-                "area": area,
-                "section": section,
-                "label": label,
-            }
-        )
-
-    # ---------- BUILD FULL TABLE ONCE ----------
-    base_table = Table(
-        data,
-        colWidths=[col_area_w, col_skill_w, col_comp_w, col_tick_w, col_rem_w],
-        repeatRows=0,
-    )
-    ts = TableStyle(
-        [
-            ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.0, 0.45, 0.80)),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("FONTSIZE", (0, 1), (-1, -1), 8),
-            ("BOX", (0, 0), (-1, -1), 0.75, colors.lightgrey),
-            ("LINEBELOW", (0, 0), (-1, 0), 0.75, colors.lightgrey),
-            ("GRID", (1, 1), (-1, -1), 0.25, colors.lightgrey),
-            ("LINEAFTER", (0, 0), (0, -1), 0.75, colors.lightgrey),
-            ("ALIGN", (3, 1), (3, -1), "CENTER"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 3),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ]
-    )
-
-    # bold section labels
-    for i in range(1, len(data)):
-        if row_meta[i]["type"] == "section":
-            ts.add("FONT", (1, i), (1, i), "Helvetica-Bold", 8)
-
-    base_table.setStyle(ts)
-    avail_height_first = table_top - bottom_margin
-    base_table.wrapOn(c, width - left * 2, avail_height_first)
-    full_rows = base_table._cellvalues
-    full_heights = list(base_table._rowHeights)
-
-    # ---------- SPLIT INTO PAGES ----------
-    pages = []
-    header_row = full_rows[0]
-    header_meta = row_meta[0]
-
-    max_height = avail_height_first
-    cur_rows = [header_row]
-    cur_meta = [header_meta]
-    cur_height = full_heights[0]
-
-    i = 1
-    while i < len(full_rows):
-        meta_i = row_meta[i]
-        # If this row starts a new AREA block, grab the whole block
-        if meta_i.get("type") == "area":
-            start = i
-            j = i
-            # area block continues until the next 'area' row or end
-            while j + 1 < len(full_rows) and row_meta[j + 1].get("type") != "area":
-                j += 1
-        else:
-            # safety: treat single row as its own tiny block
-            start = i
-            j = i
-
-        block_rows = full_rows[start : j + 1]
-        block_meta = row_meta[start : j + 1]
-        block_height = sum(full_heights[k] for k in range(start, j + 1))
-
-        # If the block can't fit on this page (and we already have more
-        # than just the header), push current page and start a new one
-        if cur_height + block_height > max_height and len(cur_rows) > 1:
-            pages.append((cur_rows, cur_meta))
-            cur_rows = [header_row]
-            cur_meta = [header_meta]
-            cur_height = full_heights[0]
-            max_height = height - 80 # subsequent pages
-
-        # Add the whole block to the current page
-        cur_rows.extend(block_rows)
-        cur_meta.extend(block_meta)
-        cur_height += block_height
-        i = j + 1
-
-    pages.append((cur_rows, cur_meta))
-
-
-    # ---------- DRAW PAGES ----------
-    last_table_y = table_top
-    carry_area = None
-
-    try:
-        base_cmds = list(ts.getCommands())
-    except AttributeError:
-        base_cmds = list(ts._cmds)
-
-    for page_index, (page_rows, page_meta) in enumerate(pages):
-        if page_index == 0:
-            top_y = table_top
-        else:
-            c.showPage()
-            top_y = height - 60
-            c.setFont("Helvetica-Bold", 10)
-            c.setFillColor(colors.black)
-            c.drawString(left, top_y, "Learner's Competency Checklist (continued)")
-            top_y -= 16
-
-        page_table = Table(
-            page_rows,
-            colWidths=[col_area_w, col_skill_w, col_comp_w, col_tick_w, col_rem_w],
-            repeatRows=1,
-        )
-
-        extra_cmds = []
-        for i, meta_row in enumerate(page_meta):
-            if meta_row.get("type") == "area":
-                extra_cmds.append(
-                    ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#bfbfbf"))
-                )
-                extra_cmds.append(
-                    ("TEXTCOLOR", (0, i), (-1, i), colors.white)
-                )
-                extra_cmds.append(
-                    ("LINEABOVE", (0, i), (-1, i), 0.9, colors.black)
-                )
-                extra_cmds.append(
-                    ("LINEBELOW", (0, i), (-1, i), 0.9, colors.black)
-                )
-
-        ts_page = TableStyle(base_cmds + extra_cmds)
-        page_table.setStyle(ts_page)
-
-        avail_h = top_y - bottom_margin
-        w, h = page_table.wrapOn(c, width - left * 2, avail_h)
-        table_y = top_y - h
-
-        row_heights = list(page_table._rowHeights)
-
-        area_ranges = _compute_area_ranges_from_meta(page_meta, previous_area=carry_area)
-
-        _draw_area_icons_vertical(
-            c=c,
-            left=left,
-            table_y=table_y,
-            row_heights=row_heights,
-            col_area_w=col_area_w,
-            area_ranges=area_ranges,
-        )
-
-        page_table.drawOn(c, left, table_y)
-        last_table_y = table_y
-
-        for m in page_meta:
-            if m.get("type") == "area":
-                carry_area = m.get("area")
-
-    # ---------- REMARKS + FOOTER ----------
-    remarks_y = last_table_y - 24
-    if remarks_y < 120:
-        c.showPage()
-        remarks_y = height - 120
-
-    raw_name = (session.get("full_name") or session.get("username") or "").strip()
-    if raw_name:
-        parts = raw_name.split()
-        if len(parts) >= 2:
-            raw_name = f"{parts[0]} {parts[-1]}"
-    prepared_name = f"Tr. {raw_name}" if raw_name else "Tr. __________________"
-    today_str = datetime.now().strftime("%d-%b-%Y")
-
-    overall = (meta.get("overall_remark") or "").strip()
-    # convert \n to <br/> so each role appears on its own line
-    overall_html = (overall or " ").replace("\n", "<br/>")
-
-    sc = (meta.get("special_communication") or "").strip()
-    ntb = meta.get("next_term_begin")
-    nte = meta.get("next_term_end")
-    #fees = (meta.get("school_fees") or "").strip()
-    #fees_dc = (meta.get("school_fees_daycare") or "").strip()
-
-    ntb_str = ntb.strftime("%d/%m/%y") if ntb else "__________"
-    nte_str = nte.strftime("%d/%m/%y") if nte else "__________"
-
-    styles = getSampleStyleSheet()
-    h_style = ParagraphStyle(
-        "bottom_head",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=9,
-        textColor=colors.white,
-        alignment=0,
-    )
-    label_style = ParagraphStyle(
-        "bottom_label",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=8,
-    )
-    text_style = ParagraphStyle(
-        "bottom_text",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=8,
-        leading=10,
-    )
-
-    bottom_data = [
-        [Paragraph("Remarks & Recommendations to the learner:", h_style), ""],
-        [Paragraph(overall_html, text_style), ""],
-        [Paragraph("Special Communication:", label_style), Paragraph(sc or " ", text_style)],
-        [Paragraph("Next term begins on:", label_style),
-         Paragraph(f"{ntb_str} will end on: {nte_str}", text_style)],
-        #[Paragraph("School fees:", label_style), Paragraph(fees or " ", text_style)],
-        #[Paragraph("School fees + daycare:", label_style), Paragraph(fees_dc or " ", text_style)],
-        [Paragraph("Prepared by:", label_style), Paragraph(prepared_name, text_style)],
-        [Paragraph("Date:", label_style), Paragraph(today_str, text_style)],
-    ]
-
-    bottom_table = Table(
-        bottom_data,
-        colWidths=[(width - 2 * left) * 0.28, (width - 2 * left) * 0.72],
-    )
-    bt = TableStyle(
-        [
-            ("BOX", (0, 0), (-1, -1), 0.75, colors.lightgrey),
-            ("GRID", (0, 2), (-1, -1), 0.25, colors.lightgrey),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.0, 0.45, 0.80)),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ]
-    )
-    bt.add("SPAN", (0, 0), (-1, 0))
-    bt.add("SPAN", (0, 1), (-1, 1))
-    bottom_table.setStyle(bt)
-
-    bw, bh = bottom_table.wrapOn(c, width - 2 * left, remarks_y - 40)
-    bottom_y = remarks_y - bh
-    bottom_table.drawOn(c, left, bottom_y)
-
-    c.showPage()
     c.save()
     buf.seek(0)
-
     filename = f"Checklist_{student.get('student_number','')}_{term}_{year}.pdf".replace(" ", "_")
-    return send_file(
-        buf,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/pdf",
-    )
-
+    return send_file(buf, as_attachment=True, download_name=filename, mimetype="application/pdf")
 
 
 
@@ -23756,676 +23617,6 @@ def competency_special_comm():
 
 
  
-   
-@app.route("/reports/competency_checklist_batch_pdf", methods=["POST"])
-@require_role('admin', 'headteacher', 'bursar', 'dos', 'deputyheadteacher', 'classmanager', 'teacher')
-def competency_checklist_batch_pdf():
-    ay = get_active_academic_year() or {}
-
-    # accept both term/year and termsel/yearsel from reports_hub
-    raw_term = (
-        request.form.get("term")
-        or request.form.get("termsel")
-        or ay.get("current_term")
-        or ay.get("term")
-        or "Term 1"
-    )
-    term = (raw_term or "Term 1").strip()
-
-    raw_year = (
-        request.form.get("year")
-        or request.form.get("yearsel")
-        or ay.get("year")
-        or ay.get("active_year")
-        or datetime.now().year
-    )
-    try:
-        year = int(raw_year)
-    except (TypeError, ValueError):
-        year = int(ay.get("year") or datetime.now().year)
-
-    # ids posted from reports_hub checkboxes
-    raw_ids = request.form.getlist("selected_ids")
-    student_ids = []
-    for sid in raw_ids:
-        sid = (sid or "").strip()
-        if sid.isdigit():
-            student_ids.append(int(sid))
-
-    if not student_ids:
-        flash("Please select at least one learner first.", "warning")
-        return redirect(url_for(
-            "reports_hub",
-            class_name=request.form.get("class_name", ""),
-            term=term,
-            year=year,
-        ))
-
-    # ---- single combined PDF buffer & canvas ----
-    import io
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import A4
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
-
-    # ========= LOOP THROUGH EACH STUDENT =========
-    for idx, student_id in enumerate(student_ids, start=1):
-        # ---- student ----
-        student = _fetch_student_for_checklist(student_id)
-        if not student:
-            # skip missing learners in batch mode
-            continue
-
-        # ---- items & saved ticks/remarks ----
-        conn = get_db_connection()
-        items = _fetch_checklist_items_for_term(conn, term, year)
-        conn.close()
-        saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
-        # key: (area, section, label, competence) -> {'tick': bool, 'remark': text}
-
-        # load meta (overall remark, special comms, dates, fees)
-        conn = get_db_connection()
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT overall_remark, special_communication,
-                   next_term_begin, next_term_end,
-                   school_fees, school_fees_daycare
-            FROM robotics_checklist_meta
-            WHERE student_id=%s AND term=%s AND year=%s
-            """,
-            (student_id, term, year),
-        )
-        meta = cur.fetchone() or {}
-        cur.close()
-        conn.close()
-
-
-        # ---- PDF + HEADER (only page 1) ----
-
-        left = 40
-        top = height - 40
-        bottom_margin = 60 # space for footer/remarks
-
-        # =================== CLEAN BRANDED HEADER (NO ICONS) ===================
-        banner_h = 30 * mm
-        banner_y = height - 35 * mm
-        left_margin, right_margin = left, left
-        strip_w = width - left_margin - right_margin
-        navy_w = strip_w * 0.73
-        blue_w = strip_w - navy_w
-
-        c.saveState()
-        c.setFillColor(COL_NAVY)
-        c.rect(left_margin, banner_y, navy_w, banner_h, stroke=0, fill=1)
-        c.setFillColor(COL_BLUE)
-        c.rect(left_margin + navy_w, banner_y, blue_w, banner_h, stroke=0, fill=1)
-
-        fold_depth = 11 * mm
-        fold_lip = 6 * mm
-        c.setFillColor(COL_BLUE2)
-        ps = c.beginPath()
-        ps.moveTo(left_margin + navy_w, banner_y)
-        ps.lineTo(left_margin + navy_w + fold_depth, banner_y + banner_h)
-        ps.lineTo(left_margin + navy_w + fold_depth + 2 * mm, banner_y + banner_h)
-        ps.lineTo(left_margin + navy_w + 2 * mm, banner_y)
-        ps.close()
-        c.drawPath(ps, stroke=0, fill=1)
-        flap_col = colors.HexColor("#3a86e0")
-        c.setFillColor(flap_col)
-        pf = c.beginPath()
-        pf.moveTo(left_margin + navy_w - fold_lip, banner_y)
-        pf.lineTo(left_margin + navy_w, banner_y)
-        pf.lineTo(left_margin + navy_w + fold_depth, banner_y + banner_h)
-        pf.lineTo(left_margin + navy_w - fold_lip, banner_y + banner_h)
-        pf.close()
-        c.drawPath(pf, stroke=0, fill=1)
-
-        SCHOOL_LOGO_PATH = os.path.join(current_app.static_folder, "logo.jpg")
-        logo_box = 24 * mm
-        logo_x = left_margin + 6 * mm
-        logo_y = banner_y + (banner_h - logo_box) / 2
-        if os.path.exists(SCHOOL_LOGO_PATH):
-            try:
-                c.drawImage(
-                    SCHOOL_LOGO_PATH,
-                    logo_x,
-                    logo_y,
-                    width=logo_box,
-                    height=logo_box,
-                    preserveAspectRatio=True,
-                    mask="auto",
-                )
-            except Exception:
-                pass
-        name_left = logo_x + logo_box + 6 * mm
-        name_right = left_margin + navy_w - 6 * mm
-        name_box_w = max(10, name_right - name_left)
-
-        # centre of the text block (between logo-right & navy-right)
-        center_x = (name_left + name_right) / 2.0
-
-        name_text = SCHOOL_NAME or ""
-        name_fs = 18
-        while (
-            name_fs >= 10
-            and c.stringWidth(name_text, "Helvetica-Bold", name_fs) > name_box_w
-        ):
-            name_fs -= 1
-
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", name_fs)
-        # a bit lower + more room for lines below
-        name_y = banner_y + banner_h - 5 * mm
-        c.drawCentredString(center_x, name_y, name_text)
-
-        sub_text = SCHOOL_SUB or ""
-        addr_text = SCHOOL_ADDRESS or "" # P.O Box line
-
-        # tagline line
-        if sub_text:
-            sub_fs = 12
-            while (
-                sub_fs >= 8
-                and c.stringWidth(sub_text, "Helvetica-Bold", sub_fs) > name_box_w
-            ):
-                sub_fs -= 1
-            c.setFont("Helvetica-Bold", sub_fs)
-            tagline_y = name_y - (name_fs * 1.15) # <- bigger = more spacing
-            c.drawCentredString(center_x, tagline_y, sub_text)
-        else:
-            tagline_y = name_y
-
-        # P.O Box line
-        if addr_text:
-            addr_fs = max(8, (sub_fs - 1) if sub_text else 10)
-            c.setFont("Helvetica-Bold", addr_fs)
-            addr_y = tagline_y - (addr_fs * 1.1) # extra spacing again
-            c.drawCentredString(center_x, addr_y, addr_text)
-        
-        # --------- Contacts block (RIGHT SIDE) ----------
-
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica", 9)
-        right_pad = 6 * mm
-        text_right = left_margin + strip_w - right_pad
-        line_gap = 5.5 * mm
-        y_cursor = banner_y + banner_h - 8 * mm
-
-        # -------- Contacts block (RIGHT SIDE, one per line) --------
-        raw = SCHOOL_PHONE_LINES or ""
-
-        # Normalize to one comma-separated string first
-        if isinstance(raw, (list, tuple)):
-            combined = ", ".join(str(p) for p in raw)
-        else:
-            combined = str(raw)
-
-        # Now definitely split into separate phone numbers
-        phone_lines = [p.strip() for p in combined.split(",") if p.strip()]
-
-        # draw each phone on its own line
-        for ph in phone_lines:
-            c.drawRightString(text_right, y_cursor, ph)
-            y_cursor -= line_gap
-
-        # small extra gap, then email if present
-        if SCHOOL_EMAIL:
-            y_cursor -= 2.5 * mm
-            c.drawRightString(text_right, y_cursor, SCHOOL_EMAIL)
-
-
-        c.restoreState()
-
-        # ========== LEARNER INFO TABLE (two columns) ==========
-        info_top = banner_y - 6 * mm
-        info_left = left_margin
-        info_width = width - left_margin - right_margin - (40 * mm) # room for photo
-
-        styles = getSampleStyleSheet()
-        lab = ParagraphStyle(
-            "lab",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=9,
-            leading=11,
-            textColor=colors.black,
-        )
-        val = ParagraphStyle(
-            "val",
-            parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=9,
-            leading=11,
-        )
-
-        full_name = f"{student.get('first_name','')} {student.get('middle_name','')} {student.get('last_name','')}".strip()
-
-        info_rows = [
-            [Paragraph("Learner's Name:", lab), Paragraph(full_name or "-", val)],
-            [Paragraph("Student No.:", lab), Paragraph(student.get("student_number") or "-", val)],
-            [
-                Paragraph("Class / Stream:", lab),
-                Paragraph(f"{student.get('class_name','-')} {student.get('stream','') or ''}", val),
-            ],
-            [Paragraph("Term / Year:", lab), Paragraph(f"{term} / {year}", val)],
-        ]
-
-        info_tbl = Table(
-            info_rows,
-            colWidths=[35 * mm, info_width - 35 * mm],
-            hAlign="LEFT",
-        )
-        info_tbl.setStyle(
-            TableStyle(
-                [
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ]
-            )
-        )
-        w_info, h_info = info_tbl.wrapOn(c, info_width, 9999)
-        info_tbl.drawOn(c, info_left, info_top - h_info)
-
-        # learner photo — right side
-        box_w = box_h = 32 * mm
-        photo_x = width - right_margin - box_w
-        photo_y = info_top - (h_info - box_h) / 2
-        c.setStrokeColor(colors.grey)
-        c.rect(photo_x, photo_y - box_h, box_w, box_h, stroke=1, fill=0)
-        c.setFont("Helvetica", 7)
-        c.drawCentredString(photo_x + box_w / 2, photo_y - box_h / 2, "Photo")
-
-        photo_path = (student.get("photo") or "").strip()
-        if photo_path and os.path.exists(photo_path):
-            try:
-                c.drawImage(
-                    photo_path,
-                    photo_x + 2,
-                    photo_y - box_h + 2,
-                    box_w - 4,
-                    box_h - 4,
-                    preserveAspectRatio=True,
-                    anchor="c",
-                    mask="auto",
-                )
-            except Exception:
-                pass
-
-        # ====== Big title above competence table ======
-        title_y = (info_top - h_info) - 6 * mm
-        c.setFont("Helvetica-Bold", 13)
-        c.setFillColor(colors.black)
-        c.drawString(left, title_y, "Learner's Competency Checklist [Early Childhood]")
-
-        table_top = title_y - 6 * mm
-
-        # ---------- TABLE DATA ----------
-        col_area_w = 26 * mm
-        col_skill_w = 32 * mm
-        col_tick_w = 8 * mm
-        col_rem_w = 36 * mm
-        col_comp_w = width - left * 2 - col_area_w - col_skill_w - col_tick_w - col_rem_w
-
-        styles = getSampleStyleSheet()
-        p_head = ParagraphStyle(
-            "head",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=9,
-            alignment=1,
-            textColor=colors.white,
-        )
-        p_skill = ParagraphStyle(
-            "skill",
-            parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=8,
-            leading=9,
-        )
-        p_section = ParagraphStyle(
-            "section",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=8,
-            leading=9,
-        )
-        p_comp = ParagraphStyle(
-            "comp",
-            parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=8,
-            leading=9,
-        )
-        p_rem = ParagraphStyle(
-            "rem",
-            parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=7,
-            leading=8,
-        )
-
-        data = [
-            [
-                Paragraph("Area", p_head),
-                Paragraph("Skill", p_head),
-                Paragraph("Competence", p_head),
-                Paragraph("✓", p_head),
-                Paragraph("Remarks", p_head),
-            ]
-        ]
-        row_meta = [{"type": "header"}]
-        collected_remarks = []
-        last_area = None
-        last_section = None
-        area_dividers = []
-
-        for (area, acode, section, label, comp) in items:
-            key = (area, section, label, comp)
-            saved = saved_map.get(key, {})
-            tick = bool(saved.get("tick"))
-            remark_txt = (saved.get("remark") or "").strip()
-
-            if remark_txt:
-                collected_remarks.append(
-                    f"{section} - {label}: {remark_txt}"
-                    if section
-                    else f"{label}: {remark_txt}"
-                )
-
-            # area marker row
-            if area != last_area:
-                data.append(["", "", "", "", ""])
-                row_meta.append({"type": "area", "area": area})
-                area_dividers.append(len(data) - 1)
-                last_area = area
-                last_section = None
-
-            # section row
-            if section and section != last_section:
-                data.append(["", Paragraph(section, p_section), "", "", ""])
-                row_meta.append(
-                    {
-                        "type": "section",
-                        "area": area,
-                        "section": section,
-                    }
-                )
-                last_section = section
-
-            # skill row
-            data.append(
-                [
-                    "",
-                    Paragraph(label, p_skill),
-                    Paragraph(comp, p_comp),
-                    "✔" if tick else "",
-                    Paragraph(remark_txt, p_rem) if remark_txt else "",
-                ]
-            )
-            row_meta.append(
-                {
-                    "type": "skill",
-                    "area": area,
-                    "section": section,
-                    "label": label,
-                }
-            )
-
-        # ---------- BUILD FULL TABLE ONCE ----------
-        base_table = Table(
-            data,
-            colWidths=[col_area_w, col_skill_w, col_comp_w, col_tick_w, col_rem_w],
-            repeatRows=0,
-        )
-        ts = TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.0, 0.45, 0.80)),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("FONTSIZE", (0, 1), (-1, -1), 8),
-                ("BOX", (0, 0), (-1, -1), 0.75, colors.lightgrey),
-                ("LINEBELOW", (0, 0), (-1, 0), 0.75, colors.lightgrey),
-                ("GRID", (1, 1), (-1, -1), 0.25, colors.lightgrey),
-                ("LINEAFTER", (0, 0), (0, -1), 0.75, colors.lightgrey),
-                ("ALIGN", (3, 1), (3, -1), "CENTER"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-            ]
-        )
-
-        # bold section labels
-        for i in range(1, len(data)):
-            if row_meta[i]["type"] == "section":
-                ts.add("FONT", (1, i), (1, i), "Helvetica-Bold", 8)
-
-        base_table.setStyle(ts)
-        avail_height_first = table_top - bottom_margin
-        base_table.wrapOn(c, width - left * 2, avail_height_first)
-        full_rows = base_table._cellvalues
-        full_heights = list(base_table._rowHeights)
-
-        # ---------- SPLIT INTO PAGES ----------
-
-        pages = []
-        header_row = full_rows[0]
-        header_meta = row_meta[0]
-
-        max_height = avail_height_first
-        cur_rows = [header_row]
-        cur_meta = [header_meta]
-        cur_height = full_heights[0]
-
-        i = 1
-        while i < len(full_rows):
-            meta_i = row_meta[i]
-            # If this row starts a new AREA block, grab the whole block
-            if meta_i.get("type") == "area":
-                start = i
-                j = i
-                # area block continues until the next 'area' row or end
-                while j + 1 < len(full_rows) and row_meta[j + 1].get("type") != "area":
-                    j += 1
-            else:
-                # safety: treat single row as its own tiny block
-                start = i
-                j = i
-
-            block_rows = full_rows[start : j + 1]
-            block_meta = row_meta[start : j + 1]
-            block_height = sum(full_heights[k] for k in range(start, j + 1))
-
-            # If the block can't fit on this page (and we already have more
-            # than just the header), push current page and start a new one
-            if cur_height + block_height > max_height and len(cur_rows) > 1:
-                pages.append((cur_rows, cur_meta))
-                cur_rows = [header_row]
-                cur_meta = [header_meta]
-                cur_height = full_heights[0]
-                max_height = height - 80 # subsequent pages
-
-            # Add the whole block to the current page
-            cur_rows.extend(block_rows)
-            cur_meta.extend(block_meta)
-            cur_height += block_height
-            i = j + 1
-
-        pages.append((cur_rows, cur_meta))
-
-
-        # ---------- DRAW PAGES ----------
-        last_table_y = table_top
-        carry_area = None
-
-        try:
-            base_cmds = list(ts.getCommands())
-        except AttributeError:
-            base_cmds = list(ts._cmds)
-
-        for page_index, (page_rows, page_meta) in enumerate(pages):
-            if page_index == 0:
-                top_y = table_top
-            else:
-                c.showPage()
-                top_y = height - 60
-                c.setFont("Helvetica-Bold", 10)
-                c.setFillColor(colors.black)
-                c.drawString(left, top_y, "Learner's Competency Checklist (continued)")
-                top_y -= 16
-
-            page_table = Table(
-                page_rows,
-                colWidths=[col_area_w, col_skill_w, col_comp_w, col_tick_w, col_rem_w],
-                repeatRows=1,
-            )
-
-            extra_cmds = []
-            for i, meta_row in enumerate(page_meta):
-                if meta_row.get("type") == "area":
-                    extra_cmds.append(
-                        ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#bfbfbf"))
-                    )
-                    extra_cmds.append(
-                        ("TEXTCOLOR", (0, i), (-1, i), colors.white)
-                    )
-                    extra_cmds.append(
-                        ("LINEABOVE", (0, i), (-1, i), 0.9, colors.black)
-                    )
-                    extra_cmds.append(
-                        ("LINEBELOW", (0, i), (-1, i), 0.9, colors.black)
-                    )
-
-            ts_page = TableStyle(base_cmds + extra_cmds)
-            page_table.setStyle(ts_page)
-
-            avail_h = top_y - bottom_margin
-            w, h = page_table.wrapOn(c, width - left * 2, avail_h)
-            table_y = top_y - h
-
-            row_heights = list(page_table._rowHeights)
-
-            area_ranges = _compute_area_ranges_from_meta(page_meta, previous_area=carry_area)
-
-            _draw_area_icons_vertical(
-                c=c,
-                left=left,
-                table_y=table_y,
-                row_heights=row_heights,
-                col_area_w=col_area_w,
-                area_ranges=area_ranges,
-            )
-
-            page_table.drawOn(c, left, table_y)
-            last_table_y = table_y
-
-            for m in page_meta:
-                if m.get("type") == "area":
-                    carry_area = m.get("area")
-
-        # ---------- REMARKS + FOOTER ----------
-        remarks_y = last_table_y - 24
-        if remarks_y < 120:
-            c.showPage()
-            remarks_y = height - 120
-
-        raw_name = (session.get("full_name") or session.get("username") or "").strip()
-        if raw_name:
-            parts = raw_name.split()
-            if len(parts) >= 2:
-                raw_name = f"{parts[0]} {parts[-1]}"
-        prepared_name = f"Tr. {raw_name}" if raw_name else "Tr. __________________"
-        today_str = datetime.now().strftime("%d-%b-%Y")
-
-        overall = (meta.get("overall_remark") or "").strip()
-        # convert \n to <br/> so each role appears on its own line
-        overall_html = (overall or " ").replace("\n", "<br/>")
-
-        sc = (meta.get("special_communication") or "").strip()
-        ntb = meta.get("next_term_begin")
-        nte = meta.get("next_term_end")
-        #fees = (meta.get("school_fees") or "").strip()
-        #fees_dc = (meta.get("school_fees_daycare") or "").strip()
-
-        ntb_str = ntb.strftime("%d/%m/%y") if ntb else "__________"
-        nte_str = nte.strftime("%d/%m/%y") if nte else "__________"
-
-        styles = getSampleStyleSheet()
-        h_style = ParagraphStyle(
-            "bottom_head",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=9,
-            textColor=colors.white,
-            alignment=0,
-        )
-        label_style = ParagraphStyle(
-            "bottom_label",
-            parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=8,
-        )
-        text_style = ParagraphStyle(
-            "bottom_text",
-            parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=8,
-            leading=10,
-        )
-
-        bottom_data = [
-            [Paragraph("Remarks & Recommendations to the learner:", h_style), ""],
-            [Paragraph(overall_html, text_style), ""],
-            [Paragraph("Special Communication:", label_style), Paragraph(sc or " ", text_style)],
-            [Paragraph("Next term begins on:", label_style),
-             Paragraph(f"{ntb_str} will end on: {nte_str}", text_style)],
-            #[Paragraph("School fees:", label_style), Paragraph(fees or " ", text_style)],
-            #[Paragraph("School fees + Requirements:", label_style), Paragraph(fees_dc or " ", text_style)],
-            [Paragraph("Prepared by:", label_style), Paragraph(prepared_name, text_style)],
-            [Paragraph("Date:", label_style), Paragraph(today_str, text_style)],
-        ]
-
-        bottom_table = Table(
-            bottom_data,
-            colWidths=[(width - 2 * left) * 0.28, (width - 2 * left) * 0.72],
-        )
-        bt = TableStyle(
-            [
-                ("BOX", (0, 0), (-1, -1), 0.75, colors.lightgrey),
-                ("GRID", (0, 2), (-1, -1), 0.25, colors.lightgrey),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.0, 0.45, 0.80)),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ]
-        )
-        bt.add("SPAN", (0, 0), (-1, 0))
-        bt.add("SPAN", (0, 1), (-1, 1))
-        bottom_table.setStyle(bt)
-
-        bw, bh = bottom_table.wrapOn(c, width - 2 * left, remarks_y - 40)
-        bottom_y = remarks_y - bh
-        bottom_table.drawOn(c, left, bottom_y)
-        c.showPage()
-
-    # ========= END LOOP =========
-
-    c.save()
-    buf.seek(0)
-    filename = f"Checklist_Batch_{term}_{year}.pdf".replace(" ", "_")
-    return send_file(
-        buf,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/pdf",
-    )
-
 
 #=========================X-TER ASSESSMENT========================
 @app.route("/character_form", methods=["GET", "POST"])
