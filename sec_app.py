@@ -22727,7 +22727,6 @@ def admin_checklist_items():
         year = current_year
 
     conn = get_db_connection()
-    ensure_robotics_checklist_item_terms_schema(conn)
     cur = conn.cursor(dictionary=True)
 
     if request.method == "POST":
