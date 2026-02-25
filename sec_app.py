@@ -133,6 +133,11 @@ MAX_PHOTO_SIZE = 3 * 1024 * 1024 # 5 MB (you can reduce if you want)
 
 
 REMARK_OPTIONS = [ 
+    "★",
+    "★★",
+    "★★★",
+    "★★★★",
+    "★★★★★",
     "Exceeds the level of development expected",
     "At the level of development Expected",
     "Towards the level of Development Expected",
