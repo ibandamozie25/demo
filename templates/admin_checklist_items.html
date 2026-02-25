@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-3">
+  <h4 class="text-primary">Manage Checklist Items</h4>
+
+  <form method="get" class="row g-2 mb-3">
+    <div class="col-md-3">
+      <label class="form-label mb-0">Term</label>
+      <select name="term" class="form-select form-select-sm">
+        {% for t in ["Term 1","Term 2","Term 3"] %}
+          <option value="{{t}}" {% if t==term %}selected{% endif %}>{{t}}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label mb-0">Year</label>
+      <input name="year" type="number" class="form-control form-control-sm" value="{{year}}">
+    </div>
+    <div class="col-md-3 d-flex align-items-end">
+      <button class="btn btn-sm btn-primary">Load</button>
+    </div>
+  </form>
+
+  <div class="card mb-3">
+    <div class="card-header">Add Item</div>
+    <div class="card-body">
+      <form method="post" class="row g-2">
+        <input type="hidden" name="action" value="add">
+
+        <div class="col-md-3">
+          <input name="area" class="form-control form-control-sm" placeholder="Area" required>
+        </div>
+        <div class="col-md-2">
+          <input name="area_code" class="form-control form-control-sm" placeholder="Area Code (e.g G)" required>
+        </div>
+        <div class="col-md-3">
+          <input name="section" class="form-control form-control-sm" placeholder="Section" required>
+        </div>
+        <div class="col-md-4">
+          <input name="label" class="form-control form-control-sm" placeholder="Skill/Label" required>
+        </div>
+
+        <div class="col-md-8">
+          <input name="competence" class="form-control form-control-sm" placeholder="Competence statement" required>
+        </div>
+
+        <div class="col-md-2">
+          <input name="sort_order" type="number" class="form-control form-control-sm" value="0">
+        </div>
+
+        <div class="col-md-2 d-flex align-items-center gap-2">
+          <label class="small mb-0"><input type="checkbox" name="is_active" checked> Active</label>
+        </div>
+
+        <div class="col-md-6">
+          <label class="form-label mb-0">Assign Terms</label><br>
+          {% for t in ["Term 1","Term 2","Term 3"] %}
+            <label class="me-2 small"><input type="checkbox" name="terms" value="{{t}}" checked> {{t}}</label>
+          {% endfor %}
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label mb-0">Year mode</label>
+          <select class="form-select form-select-sm" name="year_mode">
+            <option value="ANY" selected>Any year</option>
+            <option value="THIS">Only this year (selected)</option>
+          </select>
+          <div class="form-text">Use “Only this year” when curriculum changes by year.</div>
+        </div>
+
+        <div class="col-md-3 d-flex align-items-end">
+          <button class="btn btn-sm btn-success">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-bordered align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>Area</th><th>Code</th><th>Section</th><th>Label</th><th>Competence</th>
+          <th>Order</th><th>Terms</th><th>Active</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in items %}
+        <tr>
+          <form method="post">
+            <input type="hidden" name="action" value="update">
+            <input type="hidden" name="id" value="{{it.id}}">
+
+            <td><input name="area" class="form-control form-control-sm" value="{{it.area}}"></td>
+            <td style="width:80px"><input name="area_code" class="form-control form-control-sm" value="{{it.area_code}}"></td>
+            <td><input name="section" class="form-control form-control-sm" value="{{it.section}}"></td>
+            <td><input name="label" class="form-control form-control-sm" value="{{it.label}}"></td>
+            <td><input name="competence" class="form-control form-control-sm" value="{{it.competence}}"></td>
+            <td style="width:90px"><input name="sort_order" type="number" class="form-control form-control-sm" value="{{it.sort_order}}"></td>
+
+            <td style="min-width:190px">
+              {% for t in ["Term 1","Term 2","Term 3"] %}
+                <label class="me-2 small">
+                  <input type="checkbox" name="terms" value="{{t}}" {% if it.term_list and t in it.term_list %}checked{% endif %}>
+                  {{t}}
+                </label>
+              {% endfor %}
+              <div class="small text-muted">{{ it.term_list or "" }}</div>
+              <select class="form-select form-select-sm mt-1" name="year_mode">
+                <option value="ANY" selected>Any year</option>
+                <option value="THIS">Only selected year</option>
+              </select>
+            </td>
+
+            <td class="text-center">
+              <input type="checkbox" name="is_active" {% if it.is_active %}checked{% endif %}>
+            </td>
+
+            <td class="d-flex gap-2">
+              <button class="btn btn-sm btn-primary">Save</button>
+          </form>
+
+          <form method="post" onsubmit="return confirm('Disable this item?');">
+            <input type="hidden" name="action" value="disable">
+            <input type="hidden" name="id" value="{{it.id}}">
+            <button class="btn btn-sm btn-outline-danger">Disable</button>
+          </form>
+            </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}

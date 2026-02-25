@@ -1368,6 +1368,50 @@ def _fetch_student_for_checklist(student_id: int):
 
 
 
+def _fetch_checklist_items_for_term(conn, term: str, year: int):
+    """
+    Returns list of dicts:
+      {id, area, area_code, section, label, competence, sort_order}
+    Only items assigned to selected term and (year is NULL or year=selected year).
+    """
+    ensure_robotics_checklist_item_terms_schema(conn)
+
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+      SELECT i.id, i.area, i.area_code, i.section, i.label, i.competence, i.sort_order
+      FROM robotics_checklist_items i
+      JOIN robotics_checklist_item_terms t ON t.item_id = i.id
+      WHERE i.is_active=1
+        AND t.is_active=1
+        AND t.term=%s
+        AND (t.year IS NULL OR t.year=%s)
+      ORDER BY i.area_code, i.area, i.section, i.sort_order, i.id
+    """, (term, year))
+    rows = cur.fetchall() or []
+    cur.close()
+    return rows
+
+def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int):
+    """
+    Returns: { item_id: {'tick':0/1, 'remark': ''} }
+    """
+    conn = get_db_connection()
+    ensure_robotics_checklist_schema(conn)
+    cur = conn.cursor(dictionary=True)
+    saved = {}
+    try:
+        cur.execute("""
+          SELECT item_id, COALESCE(tick,0) AS tick, COALESCE(remark,'') AS remark
+          FROM robotics_checklist
+          WHERE student_id=%s AND term=%s AND year=%s
+        """, (student_id, term, year))
+        for r in (cur.fetchall() or []):
+            saved[int(r["item_id"])] = {"tick": int(r["tick"]), "remark": r["remark"]}
+    finally:
+        cur.close()
+        conn.close()
+    return saved
+
 def _fetch_checklist_items():
     """
     Static checklist definition.
@@ -22542,7 +22586,7 @@ def mark_sheet_pdf_reportlab():
 @require_role("admin", "headteacher", "bursar", "teacher", "classmanager", "deputyheadteacher")
 def competency_checklist(student_id):
     ay = get_active_academic_year() or {}
-    current_term = ay.get("current_term") or ay.get("term") or "Term 1"
+    current_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
     current_year = int(ay.get("year") or datetime.now().year)
 
     term = (request.values.get("term") or current_term).strip()
@@ -22554,24 +22598,17 @@ def competency_checklist(student_id):
     conn = get_db_connection()
     ensure_robotics_checklist_schema(conn)
     ensure_robotics_checklist_meta_schema(conn)
+    ensure_robotics_checklist_item_terms_schema(conn)
+
     cur = conn.cursor(dictionary=True)
 
     # ---------- student ----------
-    cur.execute(
-        """
-        SELECT id,
-               student_number,
-               first_name,
-               COALESCE(Middle_name,'') AS Middle_name,
-               last_name,
-               class_name,
-               stream,
-               section
+    cur.execute("""
+        SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
+               last_name, class_name, stream, section
         FROM students
         WHERE id=%s
-        """,
-        (student_id,),
-    )
+    """, (student_id,))
     student = cur.fetchone()
     if not student:
         cur.close()
@@ -22579,202 +22616,80 @@ def competency_checklist(student_id):
         flash("Student not found.", "warning")
         return redirect(url_for("students"))
 
-    # ---------- navigation within same class ----------
-    prev_id = next_id = None
-    if student.get("class_name"):
-        cur.execute(
-            """
-            SELECT id
-            FROM students
-            WHERE class_name=%s AND archived=0
-            ORDER BY last_name, first_name, id
-            """,
-            (student["class_name"],),
-        )
-        id_rows = cur.fetchall() or []
-        all_ids = [r["id"] for r in id_rows]
-        if student_id in all_ids:
-            idx = all_ids.index(student_id)
-            if idx > 0:
-                prev_id = all_ids[idx - 1]
-            if idx < len(all_ids) - 1:
-                next_id = all_ids[idx + 1]
+    # ---------- checklist items for THIS term/year ----------
+    conn = get_db_connection()
+    items = _fetch_checklist_items_for_term(conn, term, year)
+    conn.close() # list of dicts
 
-    # ---------- checklist items ----------
-    items = _fetch_checklist_items()
+    # saved ticks/remarks for this term/year
+    saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
 
-    # existing checklist rows
-    cur.execute(
-        """
-        SELECT area, area_code, section, label, competence, tick, remark
-        FROM robotics_checklist
-        WHERE student_id=%s AND term=%s AND year=%s
-        """,
-        (student_id, term, year),
-    )
-    saved_rows = cur.fetchall() or []
-    saved_map = {
-        (r["area"], r["section"], r["label"], r["competence"]): r
-        for r in saved_rows
-    }
-
-    # existing meta for this learner/period
+    # meta (your existing meta method is fine)
     meta = _fetch_checklist_meta(student_id, term, year)
 
-    # ---- auto-fill next term dates from term_dates if missing ---- # <-- added
-    try:
-        ensure_term_dates_schema(conn)
-    except Exception:
-        pass # if helper fails, just keep existing meta
-
-    cur.execute(
-        """
-        SELECT next_term_date, next_term_end_date
-        FROM term_dates
-        WHERE year=%s AND term=%s
-        LIMIT 1
-        """,
-        (year, term),
-    )
-    td = cur.fetchone() or {}
-
-    from datetime import datetime as _dt
-
-    if not meta.get("next_term_begin") and td.get("next_term_date"):
-        try:
-            meta["next_term_begin"] = _dt.strptime(
-                td["next_term_date"], "%Y-%m-%d"
-            ).date()
-        except Exception:
-            # if it's already a date, just keep it
-            meta["next_term_begin"] = td["next_term_date"]
-
-    if not meta.get("next_term_end") and td.get("next_term_end_date"):
-        try:
-            meta["next_term_end"] = _dt.strptime(
-                td["next_term_end_date"], "%Y-%m-%d"
-            ).date()
-        except Exception:
-            meta["next_term_end"] = td["next_term_end_date"]
-    # ---- end auto-fill block ----
-
-    # ---------- dropdown options for overall remark (keep your existing logic) ----------
-    cur.execute(
-        """
-        SELECT DISTINCT overall_remark
-        FROM robotics_checklist_meta
-        WHERE overall_remark IS NOT NULL
-          AND overall_remark <> ''
-        ORDER BY overall_remark
-        """
-    )
-    extra_overall = [
-        r["overall_remark"]
-        for r in (cur.fetchall() or [])
-        if r["overall_remark"] not in RECOMMENDATION_OPTIONS
-    ]
-    overall_options = RECOMMENDATION_OPTIONS + extra_overall
-
-    # ---------- load comment library groups (teacher / headteacher) ----------
+    # dropdowns (keep your existing logic)
+    overall_options = RECOMMENDATION_OPTIONS[:]  # or your dynamic list
     teacher_library, head_library = load_comment_library_groups(conn)
 
     if request.method == "POST":
-        # ---------- save checklist rows ----------
-        cur.execute(
-            """
+        # delete old saved for this period
+        cur.execute("""
             DELETE FROM robotics_checklist
             WHERE student_id=%s AND term=%s AND year=%s
-            """,
-            (student_id, term, year),
-        )
-        for idx, (area, acode, section, label, comp) in enumerate(items):
-            tick_val = 1 if request.form.get(f"tick_{idx}") == "on" else 0
-            remark_val = (request.form.get(f"remark_{idx}") or "").strip()
-            cur.execute(
-                """
-                INSERT INTO robotics_checklist
-                    (student_id, term, year,
-                     area, area_code, section, label, competence,
-                     tick, remark)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    student_id,
-                    term,
-                    year,
-                    area,
-                    acode,
-                    section,
-                    label,
-                    comp,
-                    tick_val,
-                    remark_val,
-                ),
-            )
+        """, (student_id, term, year))
 
-        # ---------- save meta (overall remark, comms, dates, fees) ----------
+        # save each item by item_id
+        for it in items:
+            item_id = int(it["id"])
+            tick_val = 1 if request.form.get(f"tick_{item_id}") == "on" else 0
+            remark_val = (request.form.get(f"remark_{item_id}") or "").strip()
+
+            cur.execute("""
+                INSERT INTO robotics_checklist (student_id, term, year, item_id, tick, remark)
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (student_id, term, year, item_id, tick_val, remark_val or None))
+
+        # ---------- save meta (same as you had) ----------
         def _parse_date(val: str):
             try:
                 return datetime.strptime(val, "%Y-%m-%d").date()
             except Exception:
                 return None
 
-        overall = (
-            (request.form.get("overall_custom") or "").strip()
-            or (request.form.get("overall_remark") or "").strip()
-        )
+        overall = ((request.form.get("overall_custom") or "").strip()
+                   or (request.form.get("overall_remark") or "").strip())
         special = (request.form.get("special_communication") or "").strip()
         nb = _parse_date((request.form.get("next_term_begin") or "").strip())
         ne = _parse_date((request.form.get("next_term_end") or "").strip())
         fees = (request.form.get("school_fees") or "").strip()
         fees_dc = (request.form.get("school_fees_daycare") or "").strip()
 
-        cur.execute(
-            """
+        cur.execute("""
             DELETE FROM robotics_checklist_meta
             WHERE student_id=%s AND term=%s AND year=%s
-            """,
-            (student_id, term, year),
-        )
-        cur.execute(
-            """
+        """, (student_id, term, year))
+        cur.execute("""
             INSERT INTO robotics_checklist_meta
-                (student_id, term, year,
-                 overall_remark, special_communication,
-                 next_term_begin, next_term_end,
-                 school_fees, school_fees_daycare)
+                (student_id, term, year, overall_remark, special_communication,
+                 next_term_begin, next_term_end, school_fees, school_fees_daycare)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                student_id,
-                term,
-                year,
-                overall or None,
-                special or None,
-                nb,
-                ne,
-                fees or None,
-                fees_dc or None,
-            ),
-        )
+        """, (
+            student_id, term, year,
+            overall or None, special or None,
+            nb, ne,
+            fees or None, fees_dc or None
+        ))
 
         conn.commit()
         cur.close()
         conn.close()
         flash("Checklist saved.", "success")
-        return redirect(
-            url_for(
-                "competency_checklist",
-                student_id=student_id,
-                term=term,
-                year=year,
-            )
-        )
+        return redirect(url_for("competency_checklist", student_id=student_id, term=term, year=year))
 
     cur.close()
     conn.close()
 
-    # format for the <input type="date"> fields
+    # format dates for inputs
     if meta.get("next_term_begin"):
         meta["next_term_begin"] = meta["next_term_begin"].strftime("%Y-%m-%d")
     if meta.get("next_term_end"):
@@ -22785,10 +22700,9 @@ def competency_checklist(student_id):
         student=student,
         term=term,
         year=year,
-        items=items,
-        saved_map=saved_map,
+        items=items,                 # list of dicts now
+        saved_map=saved_map,         # item_id -> {tick, remark}
         remark_options=REMARK_OPTIONS,
-        recommendation_options=RECOMMENDATION_OPTIONS,
         overall_options=overall_options,
         meta=meta,
         prev_id=prev_id,
@@ -22797,6 +22711,113 @@ def competency_checklist(student_id):
         head_library=head_library,
     )
 
+
+
+
+@app.route("/admin/checklist_items", methods=["GET", "POST"])
+@require_role("admin", "headteacher")
+def admin_checklist_items():
+    ay = get_active_academic_year() or {}
+    current_year = int(ay.get("year") or datetime.now().year)
+
+    term = (request.values.get("term") or "Term 1").strip()
+    try:
+        year = int(request.values.get("year") or current_year)
+    except ValueError:
+        year = current_year
+
+    conn = get_db_connection()
+    ensure_robotics_checklist_item_terms_schema(conn)
+    cur = conn.cursor(dictionary=True)
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
+
+        if action == "add":
+            area = (request.form.get("area") or "").strip()
+            area_code = (request.form.get("area_code") or "").strip()
+            section = (request.form.get("section") or "").strip()
+            label = (request.form.get("label") or "").strip()
+            competence = (request.form.get("competence") or "").strip()
+            sort_order = int(request.form.get("sort_order") or 0)
+            is_active = 1 if request.form.get("is_active") == "on" else 0
+
+            # terms selected (multi)
+            terms = request.form.getlist("terms")  # ["Term 1","Term 2",...]
+            year_mode = (request.form.get("year_mode") or "ANY").strip()  # ANY or THIS
+            term_year = None if year_mode == "ANY" else year
+
+            cur.execute("""
+              INSERT INTO robotics_checklist_items (area, area_code, section, label, competence, sort_order, is_active)
+              VALUES (%s,%s,%s,%s,%s,%s,%s)
+            """, (area, area_code, section, label, competence, sort_order, is_active))
+            item_id = cur.lastrowid
+
+            for t in terms:
+                cur.execute("""
+                  INSERT IGNORE INTO robotics_checklist_item_terms (item_id, term, year, is_active)
+                  VALUES (%s,%s,%s,1)
+                """, (item_id, t, term_year))
+
+            conn.commit()
+            flash("Checklist item added.", "success")
+
+        elif action == "update":
+            item_id = int(request.form.get("id"))
+            area = (request.form.get("area") or "").strip()
+            area_code = (request.form.get("area_code") or "").strip()
+            section = (request.form.get("section") or "").strip()
+            label = (request.form.get("label") or "").strip()
+            competence = (request.form.get("competence") or "").strip()
+            sort_order = int(request.form.get("sort_order") or 0)
+            is_active = 1 if request.form.get("is_active") == "on" else 0
+
+            terms = request.form.getlist("terms")
+            year_mode = (request.form.get("year_mode") or "ANY").strip()
+            term_year = None if year_mode == "ANY" else year
+
+            cur.execute("""
+              UPDATE robotics_checklist_items
+              SET area=%s, area_code=%s, section=%s, label=%s, competence=%s,
+                  sort_order=%s, is_active=%s
+              WHERE id=%s
+            """, (area, area_code, section, label, competence, sort_order, is_active, item_id))
+
+            # reset term mapping (simple + safe)
+            cur.execute("DELETE FROM robotics_checklist_item_terms WHERE item_id=%s", (item_id,))
+            for t in terms:
+                cur.execute("""
+                  INSERT INTO robotics_checklist_item_terms (item_id, term, year, is_active)
+                  VALUES (%s,%s,%s,1)
+                """, (item_id, t, term_year))
+
+            conn.commit()
+            flash("Item updated.", "success")
+
+        elif action == "disable":
+            item_id = int(request.form.get("id"))
+            cur.execute("UPDATE robotics_checklist_items SET is_active=0 WHERE id=%s", (item_id,))
+            conn.commit()
+            flash("Item disabled.", "success")
+
+        return redirect(url_for("admin_checklist_items", term=term, year=year))
+
+    # load items + their terms
+    cur.execute("""
+      SELECT i.*,
+             GROUP_CONCAT(CONCAT(t.term, IFNULL(CONCAT('(',t.year,')'),'')) ORDER BY t.term SEPARATOR ', ') AS term_list
+      FROM robotics_checklist_items i
+      LEFT JOIN robotics_checklist_item_terms t ON t.item_id=i.id AND t.is_active=1
+      WHERE i.is_active=1
+      GROUP BY i.id
+      ORDER BY i.area_code, i.area, i.section, i.sort_order, i.id
+    """)
+    items = cur.fetchall() or []
+
+    cur.close()
+    conn.close()
+
+    return render_template("admin_checklist_items.html", items=items, term=term, year=year)
 
 
 
@@ -22836,8 +22857,10 @@ def competency_checklist_pdf(student_id):
         )
     
     # ---- items & saved ticks/remarks ----
-    items = _fetch_checklist_items()
-    saved_map = _fetch_saved_checklist_map(student_id, term, year)
+    conn = get_db_connection()
+    items = _fetch_checklist_items_for_term(conn, term, year)
+    conn.close()
+    saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
     # key: (area, section, label, competence) -> {'tick': bool, 'remark': text}
     
 
@@ -23707,8 +23730,10 @@ def competency_checklist_batch_pdf():
             continue
 
         # ---- items & saved ticks/remarks ----
-        items = _fetch_checklist_items()
-        saved_map = _fetch_saved_checklist_map(student_id, term, year)
+        conn = get_db_connection()
+        items = _fetch_checklist_items_for_term(conn, term, year)
+        conn.close()
+        saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
         # key: (area, section, label, competence) -> {'tick': bool, 'remark': text}
 
         # load meta (overall remark, special comms, dates, fees)
