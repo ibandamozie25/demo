@@ -1334,7 +1334,26 @@ def get_recommendation_options(conn):
 # ------------------ SCHEMA ENSURE KINDERGARTEN ------------------ #
 
 # ------------------ KINDERGARTEN HELPERS ------------------ #
-
+def ensure_robotics_checklist_item_terms_schema(conn):
+    ensure_robotics_checklist_items_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS robotics_checklist_item_terms (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      item_id INT NOT NULL,
+      term VARCHAR(16) NOT NULL,
+      year INT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      UNIQUE KEY uq_item_term_year (item_id, term, year),
+      INDEX idx_term (term),
+      INDEX idx_term_year (term, year),
+      CONSTRAINT fk_item_terms_item
+        FOREIGN KEY (item_id) REFERENCES robotics_checklist_items(id)
+        ON DELETE CASCADE
+    )
+    """)
+    conn.commit()
+    cur.close()
 def _fetch_student_for_checklist(student_id: int):
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
@@ -22619,7 +22638,7 @@ def competency_checklist(student_id):
     # ---------- checklist items for THIS term/year ----------
     conn = get_db_connection()
     items = _fetch_checklist_items_for_term(conn, term, year)
-    conn.close() # list of dicts
+    conn.close()  # list of dicts
 
     # saved ticks/remarks for this term/year
     saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
@@ -22727,6 +22746,7 @@ def admin_checklist_items():
         year = current_year
 
     conn = get_db_connection()
+    ensure_robotics_checklist_item_terms_schema(conn)
     cur = conn.cursor(dictionary=True)
 
     if request.method == "POST":
