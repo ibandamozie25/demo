@@ -5792,41 +5792,27 @@ def compute_overall_for_student(conn, student_id, term, year):
 
     return avg_overall, division, aggregate
     
-
-
-def load_comment_library_groups(conn=None):
+def load_comment_library_groups():
     """
     Loads teacher + headteacher overall comments from comment_library,
     grouped by performance band: excellent / moderate / poor.
 
-    Works even when conn is None OR conn is stale (dropped/closed).
+    Uses its own fresh DB connection so it will NEVER break other functions
+    and will NEVER depend on a passed/stale conn.
     """
 
     def blank_groups():
         return {"excellent": [], "moderate": [], "poor": []}
 
-    close_conn = False
-    if conn is None:
-        conn = get_db_connection()
-        close_conn = True
-    else:
-        # If you passed a dead connection, reopen a fresh one
-        try:
-            if hasattr(conn, "is_connected") and (not conn.is_connected()):
-                conn = get_db_connection()
-                close_conn = True
-        except Exception:
-            conn = get_db_connection()
-            close_conn = True
-
     teacher_lib = blank_groups()
     head_lib = blank_groups()
 
-    cur = None
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
     try:
-        cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, category, text, role, scope, uses
+            SELECT category, text, role
             FROM comment_library
             WHERE scope = 'overall'
               AND role IN ('teacher','headteacher')
@@ -5847,22 +5833,24 @@ def load_comment_library_groups(conn=None):
             else:
                 continue
 
-            text = (r.get("text") or "").strip()
-            if not text:
+            txt = (r.get("text") or "").strip()
+            if not txt:
                 continue
 
             target = teacher_lib if (r.get("role") == "teacher") else head_lib
-            target[band].append(text)
+            target[band].append(txt)
 
         return teacher_lib, head_lib
 
     finally:
-        if cur:
-            try: cur.close()
-            except Exception: pass
-        if close_conn:
-            try: conn.close()
-            except Exception: pass
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def pick_comment_template(
