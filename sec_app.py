@@ -1432,6 +1432,8 @@ def _fetch_checklist_items_for_term(conn, term: str, year: int):
     cur.close()
     return rows
 
+
+
 def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int, conn=None):
     """
     Returns: { item_id: {'tick':0/1, 'remark': ''} }
@@ -1459,6 +1461,7 @@ def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int, co
             conn.close()
 
     return saved
+
     
     
 def _load_checklist_meta_for_pdf(conn, student_id: int, term: str, year: int):
@@ -1534,6 +1537,58 @@ def _build_checklist_table_data(items, saved_map, p_head, p_skill, p_section, p_
         tick = bool(saved.get("tick"))
         remark_txt = (saved.get("remark") or "").strip()
 
+        if area != last_area:
+            data.append(["", "", "", "", ""])
+            row_meta.append({"type": "area", "area": area})
+            last_area = area
+            last_section = None
+
+        if section and section != last_section:
+            data.append(["", Paragraph(section, p_section), "", "", ""])
+            row_meta.append({"type": "section", "area": area, "section": section})
+            last_section = section
+
+        data.append([
+            "",
+            Paragraph(label, p_skill),
+            Paragraph(comp, p_comp),
+            "✔" if tick else "",
+            Paragraph(remark_txt, p_rem) if remark_txt else "",
+        ])
+        row_meta.append({"type": "skill", "area": area, "section": section, "label": label})
+
+    return data, row_meta
+
+
+
+def _build_checklist_table_data(items, saved_map, p_head, p_skill, p_section, p_comp, p_rem):
+    """
+    Builds (data, row_meta) using dict-items and saved_map keyed by item_id,
+    while preserving your display and area/section grouping logic.
+    """
+    data = [[
+        Paragraph("Area", p_head),
+        Paragraph("Skill", p_head),
+        Paragraph("Competence", p_head),
+        Paragraph("✓", p_head),
+        Paragraph("Remarks", p_head),
+    ]]
+    row_meta = [{"type": "header"}]
+
+    last_area = None
+    last_section = None
+
+    for it in items:
+        item_id = int(it["id"])
+        area = (it.get("area") or "").strip()
+        section = (it.get("section") or "").strip()
+        label = (it.get("label") or "").strip()
+        comp = (it.get("competence") or "").strip()
+
+        saved = saved_map.get(item_id, {})
+        tick = bool(saved.get("tick"))
+        remark_txt = (saved.get("remark") or "").strip()
+
         # Area marker row
         if area != last_area:
             data.append(["", "", "", "", ""])
@@ -1564,6 +1619,7 @@ def _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map
     """
     Draws ONE student's checklist PDF onto the existing canvas 'c'.
     Keeps your branded header/table/remarks layout intact.
+    NOTE: does NOT call c.showPage() at the end (caller controls page breaks).
     """
 
     width, height = A4
@@ -1775,7 +1831,6 @@ def _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
     ])
 
-    # Bold section labels
     for i in range(1, len(data)):
         if row_meta[i]["type"] == "section":
             ts.add("FONT", (1, i), (1, i), "Helvetica-Bold", 8)
@@ -1911,6 +1966,7 @@ def _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map
     ntb_str = ntb.strftime("%d/%m/%y") if ntb else "__________"
     nte_str = nte.strftime("%d/%m/%y") if nte else "__________"
 
+    styles = getSampleStyleSheet()
     h_style = ParagraphStyle("bottom_head", parent=styles["Normal"], fontName="Helvetica-Bold",
                              fontSize=9, textColor=colors.white, alignment=0)
     label_style = ParagraphStyle("bottom_label", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8)
@@ -1946,7 +2002,8 @@ def _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map
     bottom_y = remarks_y - bh
     bottom_table.drawOn(c, left, bottom_y)
 
-    c.showPage()
+    # ✅ DO NOT showPage here
+
 
 
 
@@ -23504,6 +23561,9 @@ def competency_checklist_batch_pdf():
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
 
+    # ✅ page-break BETWEEN students only
+    printed = 0
+
     for student_id in student_ids:
         student = _fetch_student_for_checklist(student_id)
         if not student:
@@ -23517,12 +23577,17 @@ def competency_checklist_batch_pdf():
         finally:
             conn.close()
 
+        if printed > 0:
+            c.showPage()
+
         _draw_checklist_pdf_for_one_student(c, student, term, year, items, saved_map, meta)
+        printed += 1
 
     c.save()
     buf.seek(0)
     filename = f"Checklist_Batch_{term}_{year}.pdf".replace(" ", "_")
     return send_file(buf, as_attachment=True, download_name=filename, mimetype="application/pdf")
+
 
 
 @app.route("/reports/competency_checklist_pdf/<int:student_id>")
@@ -23562,6 +23627,7 @@ def competency_checklist_pdf(student_id):
     buf.seek(0)
     filename = f"Checklist_{student.get('student_number','')}_{term}_{year}.pdf".replace(" ", "_")
     return send_file(buf, as_attachment=True, download_name=filename, mimetype="application/pdf")
+
 
 
 
