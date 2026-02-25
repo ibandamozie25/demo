@@ -5807,7 +5807,7 @@ def load_comment_library_groups(conn=None):
 
     close_conn = False
     if conn is None:
-        conn = get_conn()
+        conn = get_db_connection()
         close_conn = True
     else:
         # If you passed a dead connection, reopen a fresh one
