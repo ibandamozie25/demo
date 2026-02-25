@@ -1377,6 +1377,7 @@ def ensure_robotics_checklist_item_terms_schema(conn):
     """)
     conn.commit()
     cur.close()
+    
 def _fetch_student_for_checklist(student_id: int):
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
@@ -1435,10 +1436,6 @@ def _fetch_checklist_items_for_term(conn, term: str, year: int):
 
 
 def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int, conn=None):
-    """
-    Returns: { item_id: {'tick':0/1, 'remark': ''} }
-    Can reuse an existing conn. If conn not passed, it opens/closes safely.
-    """
     close_conn = False
     if conn is None:
         conn = get_db_connection()
@@ -1449,16 +1446,22 @@ def _fetch_saved_checklist_map_by_item(student_id: int, term: str, year: int, co
     saved = {}
     try:
         cur.execute("""
-          SELECT item_id, COALESCE(tick,0) AS tick, COALESCE(remark,'') AS remark
-          FROM robotics_checklist
-          WHERE student_id=%s AND term=%s AND year=%s
+            SELECT item_id, COALESCE(tick,0) AS tick, COALESCE(remark,'') AS remark
+            FROM robotics_checklist
+            WHERE student_id=%s AND term=%s AND year=%s
         """, (student_id, term, year))
         for r in (cur.fetchall() or []):
             saved[int(r["item_id"])] = {"tick": int(r["tick"]), "remark": r["remark"]}
     finally:
-        cur.close()
+        try:
+            cur.close()
+        except Exception:
+            pass
         if close_conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return saved
 
