@@ -22639,6 +22639,7 @@ def mark_sheet_pdf_reportlab():
 @app.route("/reports/competency_checklist/<int:student_id>", methods=["GET", "POST"])
 @require_role("admin", "headteacher", "bursar", "teacher", "classmanager", "deputyheadteacher")
 def competency_checklist(student_id):
+
     ay = get_active_academic_year() or {}
     current_term = (ay.get("current_term") or ay.get("term") or "Term 1").strip()
     current_year = int(ay.get("year") or datetime.now().year)
@@ -22650,121 +22651,155 @@ def competency_checklist(student_id):
         year = current_year
 
     conn = get_db_connection()
-    ensure_robotics_checklist_schema(conn)
-    ensure_robotics_checklist_meta_schema(conn)
-    ensure_robotics_checklist_item_terms_schema(conn)
 
-    cur = conn.cursor(dictionary=True)
+    try:
+        ensure_robotics_checklist_schema(conn)
+        ensure_robotics_checklist_meta_schema(conn)
+        ensure_robotics_checklist_item_terms_schema(conn)
 
-    # ---------- student ----------
-    cur.execute("""
-        SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
-               last_name, class_name, stream, section
-        FROM students
-        WHERE id=%s
-    """, (student_id,))
-    student = cur.fetchone()
-    if not student:
-        cur.close()
-        conn.close()
-        flash("Student not found.", "warning")
-        return redirect(url_for("students"))
+        cur = conn.cursor(dictionary=True)
 
-    # ---------- checklist items for THIS term/year ----------
-    conn = get_db_connection()
-    items = _fetch_checklist_items_for_term(conn, term, year)
-    conn.close()  # list of dicts
-
-    # saved ticks/remarks for this term/year
-    saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
-
-    # meta (your existing meta method is fine)
-    meta = _fetch_checklist_meta(student_id, term, year)
-
-    # dropdowns (keep your existing logic)
-    overall_options = RECOMMENDATION_OPTIONS[:]  # or your dynamic list
-    teacher_library, head_library = load_comment_library_groups()
-
-    if request.method == "POST":
-        # delete old saved for this period
+        # ---------- student ----------
         cur.execute("""
-            DELETE FROM robotics_checklist
-            WHERE student_id=%s AND term=%s AND year=%s
-        """, (student_id, term, year))
+            SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
+                   last_name, class_name, stream, section
+            FROM students
+            WHERE id=%s
+        """, (student_id,))
+        student = cur.fetchone()
 
-        # save each item by item_id
-        for it in items:
-            item_id = int(it["id"])
-            tick_val = 1 if request.form.get(f"tick_{item_id}") == "on" else 0
-            remark_val = (request.form.get(f"remark_{item_id}") or "").strip()
+        if not student:
+            flash("Student not found.", "warning")
+            return redirect(url_for("students"))
+
+        # ---------- prev / next student ----------
+        cur.execute("""
+            SELECT id FROM students
+            WHERE id < %s
+            ORDER BY id DESC
+            LIMIT 1
+        """, (student_id,))
+        prev_row = cur.fetchone()
+
+        cur.execute("""
+            SELECT id FROM students
+            WHERE id > %s
+            ORDER BY id ASC
+            LIMIT 1
+        """, (student_id,))
+        next_row = cur.fetchone()
+
+        prev_id = prev_row["id"] if prev_row else None
+        next_id = next_row["id"] if next_row else None
+
+        # ---------- checklist items ----------
+        items = _fetch_checklist_items_for_term(conn, term, year)
+        saved_map = _fetch_saved_checklist_map_by_item(student_id, term, year)
+        meta = _fetch_checklist_meta(student_id, term, year)
+
+        overall_options = RECOMMENDATION_OPTIONS[:]
+        teacher_library, head_library = load_comment_library_groups()
+
+        # ==========================================================
+        # ======================= POST =============================
+        # ==========================================================
+        if request.method == "POST":
+
+            # delete old checklist
+            cur.execute("""
+                DELETE FROM robotics_checklist
+                WHERE student_id=%s AND term=%s AND year=%s
+            """, (student_id, term, year))
+
+            # insert checklist items
+            for it in items:
+                item_id = int(it["id"])
+                tick_val = 1 if request.form.get(f"tick_{item_id}") == "on" else 0
+                remark_val = (request.form.get(f"remark_{item_id}") or "").strip()
+
+                cur.execute("""
+                    INSERT INTO robotics_checklist
+                        (student_id, term, year, item_id, tick, remark)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                """, (student_id, term, year, item_id, tick_val, remark_val or None))
+
+            # ---------- meta ----------
+            def _parse_date(val: str):
+                try:
+                    return datetime.strptime(val, "%Y-%m-%d").date()
+                except Exception:
+                    return None
+
+            overall = ((request.form.get("overall_custom") or "").strip()
+                       or (request.form.get("overall_remark") or "").strip())
+            special = (request.form.get("special_communication") or "").strip()
+            nb = _parse_date((request.form.get("next_term_begin") or "").strip())
+            ne = _parse_date((request.form.get("next_term_end") or "").strip())
+            fees = (request.form.get("school_fees") or "").strip()
+            fees_dc = (request.form.get("school_fees_daycare") or "").strip()
 
             cur.execute("""
-                INSERT INTO robotics_checklist (student_id, term, year, item_id, tick, remark)
-                VALUES (%s,%s,%s,%s,%s,%s)
-            """, (student_id, term, year, item_id, tick_val, remark_val or None))
+                DELETE FROM robotics_checklist_meta
+                WHERE student_id=%s AND term=%s AND year=%s
+            """, (student_id, term, year))
 
-        # ---------- save meta (same as you had) ----------
-        def _parse_date(val: str):
-            try:
-                return datetime.strptime(val, "%Y-%m-%d").date()
-            except Exception:
-                return None
+            cur.execute("""
+                INSERT INTO robotics_checklist_meta
+                    (student_id, term, year, overall_remark, special_communication,
+                     next_term_begin, next_term_end, school_fees, school_fees_daycare)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                student_id, term, year,
+                overall or None, special or None,
+                nb, ne,
+                fees or None, fees_dc or None
+            ))
 
-        overall = ((request.form.get("overall_custom") or "").strip()
-                   or (request.form.get("overall_remark") or "").strip())
-        special = (request.form.get("special_communication") or "").strip()
-        nb = _parse_date((request.form.get("next_term_begin") or "").strip())
-        ne = _parse_date((request.form.get("next_term_end") or "").strip())
-        fees = (request.form.get("school_fees") or "").strip()
-        fees_dc = (request.form.get("school_fees_daycare") or "").strip()
+            conn.commit()
 
-        cur.execute("""
-            DELETE FROM robotics_checklist_meta
-            WHERE student_id=%s AND term=%s AND year=%s
-        """, (student_id, term, year))
-        cur.execute("""
-            INSERT INTO robotics_checklist_meta
-                (student_id, term, year, overall_remark, special_communication,
-                 next_term_begin, next_term_end, school_fees, school_fees_daycare)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """, (
-            student_id, term, year,
-            overall or None, special or None,
-            nb, ne,
-            fees or None, fees_dc or None
-        ))
+            flash("Checklist saved.", "success")
+            return redirect(url_for(
+                "competency_checklist",
+                student_id=student_id,
+                term=term,
+                year=year
+            ))
 
-        conn.commit()
-        cur.close()
-        conn.close()
-        flash("Checklist saved.", "success")
-        return redirect(url_for("competency_checklist", student_id=student_id, term=term, year=year))
+        # ==========================================================
+        # ======================= GET ==============================
+        # ==========================================================
 
-    cur.close()
-    conn.close()
+        # format dates for input fields
+        if meta.get("next_term_begin"):
+            meta["next_term_begin"] = meta["next_term_begin"].strftime("%Y-%m-%d")
+        if meta.get("next_term_end"):
+            meta["next_term_end"] = meta["next_term_end"].strftime("%Y-%m-%d")
 
-    # format dates for inputs
-    if meta.get("next_term_begin"):
-        meta["next_term_begin"] = meta["next_term_begin"].strftime("%Y-%m-%d")
-    if meta.get("next_term_end"):
-        meta["next_term_end"] = meta["next_term_end"].strftime("%Y-%m-%d")
+        return render_template(
+            "competency_checklist_form.html",
+            student=student,
+            term=term,
+            year=year,
+            items=items,
+            saved_map=saved_map,
+            remark_options=REMARK_OPTIONS,
+            overall_options=overall_options,
+            meta=meta,
+            teacher_library=teacher_library,
+            head_library=head_library,
+            prev_id=prev_id,
+            next_id=next_id,
+        )
 
-    return render_template(
-        "competency_checklist_form.html",
-        student=student,
-        term=term,
-        year=year,
-        items=items,                 # list of dicts now
-        saved_map=saved_map,         # item_id -> {tick, remark}
-        remark_options=REMARK_OPTIONS,
-        overall_options=overall_options,
-        meta=meta,
-        prev_id=prev_id,
-        next_id=next_id,
-        teacher_library=teacher_library,
-        head_library=head_library,
-    )
-
+    finally:
+        try:
+            cur.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
 
 
 
