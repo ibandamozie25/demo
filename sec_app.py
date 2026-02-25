@@ -23273,7 +23273,7 @@ def admin_checklist_items():
     term = (request.values.get("term") or "Term 1").strip()
     try:
         year = int(request.values.get("year") or current_year)
-    except ValueError:
+    except (TypeError, ValueError):
         year = current_year
 
     conn = get_db_connection()
@@ -23289,87 +23289,172 @@ def admin_checklist_items():
             section = (request.form.get("section") or "").strip()
             label = (request.form.get("label") or "").strip()
             competence = (request.form.get("competence") or "").strip()
-            sort_order = int(request.form.get("sort_order") or 0)
+
+            try:
+                sort_order = int(request.form.get("sort_order") or 0)
+            except Exception:
+                sort_order = 0
+
             is_active = 1 if request.form.get("is_active") == "on" else 0
 
-            # terms selected (multi)
-            terms = request.form.getlist("terms")  # ["Term 1","Term 2",...]
-            year_mode = (request.form.get("year_mode") or "ANY").strip()  # ANY or THIS
+            terms = request.form.getlist("terms") # ["Term 1","Term 2",...]
+            year_mode = (request.form.get("year_mode") or "ANY").strip().upper() # ANY or THIS
             term_year = None if year_mode == "ANY" else year
 
-            cur.execute("""
-              INSERT INTO robotics_checklist_items (area, area_code, section, label, competence, sort_order, is_active)
-              VALUES (%s,%s,%s,%s,%s,%s,%s)
-            """, (area, area_code, section, label, competence, sort_order, is_active))
+            cur.execute(
+                """
+                INSERT INTO robotics_checklist_items
+                    (area, area_code, section, label, competence, sort_order, is_active)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (area, area_code, section, label, competence, sort_order, is_active),
+            )
             item_id = cur.lastrowid
 
+            # Insert term mappings
             for t in terms:
-                cur.execute("""
-                  INSERT IGNORE INTO robotics_checklist_item_terms (item_id, term, year, is_active)
-                  VALUES (%s,%s,%s,1)
-                """, (item_id, t, term_year))
+                t = (t or "").strip()
+                if not t:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO robotics_checklist_item_terms (item_id, term, year, is_active)
+                    VALUES (%s,%s,%s,1)
+                    ON DUPLICATE KEY UPDATE year=VALUES(year), is_active=1
+                    """,
+                    (item_id, t, term_year),
+                )
 
             conn.commit()
             flash("Checklist item added.", "success")
 
         elif action == "update":
-            item_id = int(request.form.get("id"))
+            try:
+                item_id = int(request.form.get("id"))
+            except Exception:
+                item_id = 0
+
             area = (request.form.get("area") or "").strip()
             area_code = (request.form.get("area_code") or "").strip()
             section = (request.form.get("section") or "").strip()
             label = (request.form.get("label") or "").strip()
             competence = (request.form.get("competence") or "").strip()
-            sort_order = int(request.form.get("sort_order") or 0)
+
+            try:
+                sort_order = int(request.form.get("sort_order") or 0)
+            except Exception:
+                sort_order = 0
+
             is_active = 1 if request.form.get("is_active") == "on" else 0
 
             terms = request.form.getlist("terms")
-            year_mode = (request.form.get("year_mode") or "ANY").strip()
+            year_mode = (request.form.get("year_mode") or "ANY").strip().upper()
             term_year = None if year_mode == "ANY" else year
 
-            cur.execute("""
-              UPDATE robotics_checklist_items
-              SET area=%s, area_code=%s, section=%s, label=%s, competence=%s,
-                  sort_order=%s, is_active=%s
-              WHERE id=%s
-            """, (area, area_code, section, label, competence, sort_order, is_active, item_id))
+            cur.execute(
+                """
+                UPDATE robotics_checklist_items
+                SET area=%s, area_code=%s, section=%s, label=%s, competence=%s,
+                    sort_order=%s, is_active=%s
+                WHERE id=%s
+                """,
+                (area, area_code, section, label, competence, sort_order, is_active, item_id),
+            )
 
             # reset term mapping (simple + safe)
             cur.execute("DELETE FROM robotics_checklist_item_terms WHERE item_id=%s", (item_id,))
             for t in terms:
-                cur.execute("""
-                  INSERT INTO robotics_checklist_item_terms (item_id, term, year, is_active)
-                  VALUES (%s,%s,%s,1)
-                """, (item_id, t, term_year))
+                t = (t or "").strip()
+                if not t:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO robotics_checklist_item_terms (item_id, term, year, is_active)
+                    VALUES (%s,%s,%s,1)
+                    """,
+                    (item_id, t, term_year),
+                )
 
             conn.commit()
             flash("Item updated.", "success")
 
         elif action == "disable":
-            item_id = int(request.form.get("id"))
+            try:
+                item_id = int(request.form.get("id"))
+            except Exception:
+                item_id = 0
             cur.execute("UPDATE robotics_checklist_items SET is_active=0 WHERE id=%s", (item_id,))
             conn.commit()
             flash("Item disabled.", "success")
 
+        cur.close()
+        conn.close()
         return redirect(url_for("admin_checklist_items", term=term, year=year))
 
-    # load items + their terms
-    cur.execute("""
-      SELECT i.*,
-             GROUP_CONCAT(CONCAT(t.term, IFNULL(CONCAT('(',t.year,')'),'')) ORDER BY t.term SEPARATOR ', ') AS term_list
-      FROM robotics_checklist_items i
-      LEFT JOIN robotics_checklist_item_terms t ON t.item_id=i.id AND t.is_active=1
-      WHERE i.is_active=1
-      GROUP BY i.id
-      ORDER BY i.area_code, i.area, i.section, i.sort_order, i.id
-    """)
+    # ---------------------------------------------------
+    # LOAD ITEMS + TERM MAPPING (structured, not just text)
+    # ---------------------------------------------------
+    cur.execute(
+        """
+        SELECT i.*
+        FROM robotics_checklist_items i
+        WHERE i.is_active=1
+        ORDER BY i.area_code, i.area, i.section, i.sort_order, i.id
+        """
+    )
     items = cur.fetchall() or []
+
+    if items:
+        ids = [int(x["id"]) for x in items]
+        placeholders = ",".join(["%s"] * len(ids))
+
+        cur.execute(
+            f"""
+            SELECT item_id, term, year
+            FROM robotics_checklist_item_terms
+            WHERE is_active=1 AND item_id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        term_rows = cur.fetchall() or []
+
+        # Build: term_map[item_id] = {"Term 1": None/2026, "Term 2": None/2026, ...}
+        term_map = {}
+        for r in term_rows:
+            iid = int(r["item_id"])
+            t = (r.get("term") or "").strip()
+            yv = r.get("year") # None or int
+            term_map.setdefault(iid, {})
+            if t:
+                term_map[iid][t] = yv
+
+        # attach helpers to each item (safe, doesn't affect DB)
+        for it in items:
+            iid = int(it["id"])
+            m = term_map.get(iid, {})
+            it["term_map"] = m
+
+            # nice display string: Term 1(2026), Term 2, ...
+            parts = []
+            for t in ["Term 1", "Term 2", "Term 3"]:
+                if t in m:
+                    parts.append(f"{t}({m[t]})" if m[t] is not None else t)
+            it["term_list"] = ", ".join(parts)
+
+            # derive year_mode for UI
+            # if ANY of selected terms has year=None -> ANY
+            # else if selected terms exist -> THIS
+            if m and any(v is None for v in m.values()):
+                it["year_mode"] = "ANY"
+            elif m:
+                it["year_mode"] = "THIS"
+            else:
+                it["year_mode"] = "ANY"
 
     cur.close()
     conn.close()
 
     return render_template("admin_checklist_items.html", items=items, term=term, year=year)
-
-
 
 # ------------------ ROUTE: KINDERGARTEN PDF REPORT ------------------ #
 

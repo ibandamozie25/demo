@@ -1,7 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="container mt-3">
-  <h4 class="text-primary">Manage Checklist Items</h4>
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h4 class="text-primary mb-0">Manage Checklist Items</h4>
+
+    <!-- Back link: change endpoint if you want -->
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('reports_hub', term=term, year=year) }}">
+      ← Back
+    </a>
+  </div>
 
   <form method="get" class="row g-2 mb-3">
     <div class="col-md-3">
@@ -80,7 +88,7 @@
       <thead class="table-light">
         <tr>
           <th>Area</th><th>Code</th><th>Section</th><th>Label</th><th>Competence</th>
-          <th>Order</th><th>Terms</th><th>Active</th><th>Actions</th>
+          <th>Order</th><th>Terms</th><th>Active</th><th style="width:170px">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -97,17 +105,19 @@
             <td><input name="competence" class="form-control form-control-sm" value="{{it.competence}}"></td>
             <td style="width:90px"><input name="sort_order" type="number" class="form-control form-control-sm" value="{{it.sort_order}}"></td>
 
-            <td style="min-width:190px">
+            <td style="min-width:220px">
+              {% set tm = it.term_map or {} %}
               {% for t in ["Term 1","Term 2","Term 3"] %}
                 <label class="me-2 small">
-                  <input type="checkbox" name="terms" value="{{t}}" {% if it.term_list and t in it.term_list %}checked{% endif %}>
+                  <input type="checkbox" name="terms" value="{{t}}" {% if tm.get(t) is not none or (t in tm) %}checked{% endif %}>
                   {{t}}
                 </label>
               {% endfor %}
               <div class="small text-muted">{{ it.term_list or "" }}</div>
+
               <select class="form-select form-select-sm mt-1" name="year_mode">
-                <option value="ANY" selected>Any year</option>
-                <option value="THIS">Only selected year</option>
+                <option value="ANY" {% if it.year_mode == "ANY" %}selected{% endif %}>Any year</option>
+                <option value="THIS" {% if it.year_mode == "THIS" %}selected{% endif %}>Only selected year</option>
               </select>
             </td>
 
