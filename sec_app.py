@@ -20257,7 +20257,10 @@ def payroll_add_payment(pid):
     cat_id = get_or_create_expense_category(conn, "Salaries")
     emp_name = f"{(row['last_name'] or '').strip()}, {(row['first_name'] or '').strip()} {(row['Middle_name'] or '' ).strip()}".strip(
     ).strip(',')
-    description = f"Salary payment - {emp_name} — {row['term']} {row['year']}"
+    MONTHS = ["", "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    mname = MONTHS[int(row.get("payroll_month") or 0)] if row.get("payroll_month") else ""
+    period = f"{row['term']} {mname} {row['year']}".replace(" ", " ").strip()
+    description = f"Salary payment - {emp_name} — {period}"
     recorded_by = session.get("username", "system")
 
     cur.execute("""
