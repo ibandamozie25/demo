@@ -33,9 +33,9 @@ class BaseConfig:
     # Receipt / School Info
     # ---------------------
     RECEIPT_CHARS = int(os.getenv("RECEIPT_CHARS", 48))
-    SCHOOL_NAME = os.getenv("SCHOOL_NAME", "CITIZENS DAY AND BOARDING PRIMARY SCHOOL")
-    SCHOOL_ADDRESS_LINE1 = os.getenv("SCHOOL_ADDRESS_LINE1", "P.O. Box 31882, Kampala")
-    SCHOOL_TAGLINE = os.getenv("SCHOOL_TAGLINE", "Strive for the best")
+    SCHOOL_NAME = os.getenv("SCHOOL_NAME", "DEMO SCHOOLS")
+    SCHOOL_ADDRESS_LINE1 = os.getenv("SCHOOL_ADDRESS_LINE1", "P.O. Box 1X1X, Kampala")
+    SCHOOL_TAGLINE = os.getenv("SCHOOL_TAGLINE", "All is well")
 
     SCHOOL_NAME_LINE1 = os.getenv("SCHOOL_NAME_LINE1", "")
     SCHOOL_NAME_LINE2 = os.getenv("SCHOOL_NAME_LINE2", "")

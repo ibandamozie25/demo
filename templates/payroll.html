@@ -20,15 +20,19 @@
   <!-- Create Payroll Row -->
   <form method="post" class="row g-2 mb-4 border rounded p-3 bg-light shadow-sm">
     <input type="hidden" name="action" value="create">
+
     <div class="col-md-3">
       <label class="form-label">Employee *</label>
       <select name="employee_id" class="form-select" required>
         <option value="">-- Select Employee --</option>
         {% for e in employees %}
-          <option value="{{ e.id }}">{{ e.first_name }} {{ e.middle_name or '' }} {{ e.last_name }} ({{ e.designation }})</option>
+          <option value="{{ e.id }}">
+            {{ e.first_name }} {{ e.middle_name or '' }} {{ e.last_name }} ({{ e.designation }})
+          </option>
         {% endfor %}
       </select>
     </div>
+
     <div class="col-md-2">
       <label class="form-label">Term *</label>
       <select name="term" class="form-select" required>
@@ -37,30 +41,47 @@
         {% endfor %}
       </select>
     </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Month</label>
+      <select name="month" class="form-select">
+        <option value="">-- Optional --</option>
+        <option value="1">Jan</option><option value="2">Feb</option><option value="3">Mar</option>
+        <option value="4">Apr</option><option value="5">May</option><option value="6">Jun</option>
+        <option value="7">Jul</option><option value="8">Aug</option><option value="9">Sep</option>
+        <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+      </select>
+    </div>
+
     <div class="col-md-2">
       <label class="form-label">Year *</label>
       <input type="number" name="year" class="form-control" value="{{ default_year }}" required>
     </div>
+
     <div class="col-md-2">
       <label class="form-label">Expected Salary *</label>
       <input type="number" step="0.01" name="expected_salary" class="form-control" required>
     </div>
+
     <div class="col-md-1">
       <label class="form-label">Bonus</label>
       <input type="number" step="0.01" name="bonus" class="form-control">
     </div>
+
     <div class="col-md-1">
       <label class="form-label">Allowance</label>
       <input type="number" step="0.01" name="allowance" class="form-control">
     </div>
+
     <div class="col-md-1 d-flex align-items-end">
       <button type="submit" class="btn btn-success w-100">Add</button>
     </div>
   </form>
 
   <!-- Filters -->
-  <form method="get" class="row g-2 mb-3">
+  <form method="get" class="row g-2 mb-3 align-items-end">
     <div class="col-md-2">
+      <label class="form-label">Term</label>
       <select name="term" class="form-select">
         <option value="">All Terms</option>
         {% for t in TERMS %}
@@ -68,10 +89,26 @@
         {% endfor %}
       </select>
     </div>
+
     <div class="col-md-2">
+      <label class="form-label">Month</label>
+      <select name="month" class="form-select">
+        <option value="">All Months</option>
+        {% for m in range(1,13) %}
+          <option value="{{ m }}" {% if sel_month == m|string %}selected{% endif %}>
+            {{ ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m-1] }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Year</label>
       <input type="number" name="year" class="form-control" placeholder="Year" value="{{ sel_year }}">
     </div>
+
     <div class="col-md-3">
+      <label class="form-label">Employee</label>
       <select name="employee_id" class="form-select">
         <option value="">All Employees</option>
         {% for e in employees %}
@@ -81,11 +118,17 @@
         {% endfor %}
       </select>
     </div>
-    <div class="col-md-2"><button class="btn btn-primary">Filter</button>
+
+    <div class="col-md-1">
+      <button class="btn btn-primary w-100">Filter</button>
     </div>
-    <div class="col-md-2"><a href="{{ url_for('payroll_hub') }}" class="btn btn-primary">Clear</a>  
+
+    <div class="col-md-1">
+      <a href="{{ url_for('payroll_hub') }}" class="btn btn-outline-secondary w-100">Clear</a>
     </div>
-	<div class="col-md-2"><a href="{{ url_for('finance_hub') }}" class="btn btn-primary">← Back </a> 
+
+    <div class="col-md-1">
+      <a href="{{ url_for('finance_hub') }}" class="btn btn-outline-primary w-100">← Back</a>
     </div>
   </form>
 
@@ -106,6 +149,7 @@
           <th>Employee</th>
           <th>Designation</th>
           <th>Term</th>
+          <th>Month</th>
           <th>Year</th>
           <th>Expected</th>
           <th>Bonus</th>
@@ -124,6 +168,13 @@
           <td>{{ p.first_name }} {{ p.middle_name or '' }} {{ p.last_name }}</td>
           <td>{{ p.designation }}</td>
           <td>{{ p.term }}</td>
+          <td>
+            {% if p.payroll_month %}
+              {{ ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][p.payroll_month-1] }}
+            {% else %}
+              -
+            {% endif %}
+          </td>
           <td>{{ p.year }}</td>
           <td>{{ "{:,.0f}".format(p.expected_salary) }}</td>
           <td>{{ "{:,.0f}".format(p.bonus) }}</td>
@@ -131,35 +182,43 @@
           <td>{{ "{:,.0f}".format(p.total) }}</td>
           <td>{{ "{:,.0f}".format(p.paid_amount) }}</td>
           <td>
-            <span class="badge 
+            <span class="badge
               {% if p.status == 'fully_paid' %} bg-success
-              {% elif p.status == 'partially_paid' %} bg-warning
+              {% elif p.status == 'partially_paid' %} bg-warning text-dark
               {% else %} bg-danger {% endif %}">
               {{ p.status }}
             </span>
           </td>
           <td>{{ p.date_paid or '-' }}</td>
+
           <td class="text-nowrap">
             <!-- Add Payment -->
             <form method="post" action="{{ url_for('payroll_add_payment', pid=p.id) }}" class="d-inline">
-              <input type="number" name="amount" step="0.01" placeholder="Amt" class="form-control form-control-sm d-inline" style="width:90px;" required>
+              <input type="number" name="amount" step="0.01" placeholder="Amt"
+                     class="form-control form-control-sm d-inline" style="width:90px;" required>
               <button class="btn btn-sm btn-outline-success">Pay</button>
             </form>
+
             <!-- Edit -->
             <form method="post" action="{{ url_for('payroll_edit', pid=p.id) }}" class="d-inline">
-              <input type="number" name="expected_salary" step="0.01" value="{{ p.expected_salary }}" style="width:90px;" class="form-control form-control-sm d-inline">
-              <input type="number" name="bonus" step="0.01" value="{{ p.bonus }}" style="width:90px;" class="form-control form-control-sm d-inline">
-              <input type="number" name="allowance" step="0.01" value="{{ p.allowance }}" style="width:90px;" class="form-control form-control-sm d-inline">
+              <input type="number" name="expected_salary" step="0.01" value="{{ p.expected_salary }}"
+                     style="width:90px;" class="form-control form-control-sm d-inline">
+              <input type="number" name="bonus" step="0.01" value="{{ p.bonus }}"
+                     style="width:90px;" class="form-control form-control-sm d-inline">
+              <input type="number" name="allowance" step="0.01" value="{{ p.allowance }}"
+                     style="width:90px;" class="form-control form-control-sm d-inline">
               <button class="btn btn-sm btn-outline-primary">Update</button>
             </form>
+
             <!-- Delete -->
-            <form method="post" action="{{ url_for('payroll_delete', pid=p.id) }}" class="d-inline" onsubmit="return confirm('Delete payroll row?');">
+            <form method="post" action="{{ url_for('payroll_delete', pid=p.id) }}" class="d-inline"
+                  onsubmit="return confirm('Delete payroll row?');">
               <button class="btn btn-sm btn-outline-danger">Delete</button>
             </form>
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="13" class="text-center">No payroll records found.</td></tr>
+        <tr><td colspan="14" class="text-center">No payroll records found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

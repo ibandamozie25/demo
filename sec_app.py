@@ -13202,7 +13202,7 @@ def report_card(student_id, term, year):
     grading = fetch_grading_scale(conn)
     
     # Comment group
-    teacher_lib, head_lib = load_comment_library_groups(conn)
+    teacher_lib, head_lib = load_comment_library_groups()
     # --- navigation within same class (Prev/Next) ---
     cur = conn.cursor(dictionary=True)
     cur.execute("""
@@ -14197,7 +14197,7 @@ def midterm_report(student_id, term, year):
     ids = [r["id"] for r in (cur.fetchall() or [])]
     
     # Comment group
-    teacher_lib, head_lib = load_comment_library_groups(conn)
+    teacher_lib, head_lib = load_comment_library_groups()
     cur.close()
     conn.close()
 
@@ -20121,6 +20121,8 @@ def payroll_hub():
         try:
             employee_id = int(request.form["employee_id"])
             term = request.form["term"]
+            month = request.form.get("month") or ""
+            month = int(month) if str(month).isdigit() else None
             year = int(request.form["year"])
             expected_salary = float(request.form.get("expected_salary") or 0)
             bonus = float(request.form.get("bonus") or 0)
@@ -20135,10 +20137,10 @@ def payroll_hub():
 
         cur.execute("""
             INSERT INTO payroll
-                (employee_id, term, year, expected_salary, bonus,
+                (employee_id, term, payroll_month, year, expected_salary, bonus,
                  allowance, total, paid_amount, status, date_paid)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
-        """, (employee_id, term, year, expected_salary, bonus, allowance, total, 0.0, status))
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
+        """, (employee_id, term, month, year, expected_salary, bonus, allowance, total, 0.0, status))
         conn.commit()
         conn.close()
         flash("Payroll row created.", "success")
@@ -20146,12 +20148,17 @@ def payroll_hub():
 
     # Filters
     sel_term = request.args.get("term") or ""
+    sel_month = request.args.get("month") or ""
     sel_year = request.args.get("year") or ""
     sel_emp = request.args.get("employee_id") or ""
     q_sql, q_args = [], []
     if sel_term:
         q_sql.append("p.term = %s")
         q_args.append(sel_term)
+        
+    if sel_month:
+        q_sql.append("p.payroll_month = %s")
+        q_args.append(int(sel_month))
     if sel_year:
         q_sql.append("p.year = %s")
         q_args.append(sel_year)
@@ -20168,6 +20175,7 @@ def payroll_hub():
         {where}
         ORDER BY p.year DESC,
                  CASE p.term WHEN 'Term 1' THEN 1 WHEN 'Term 2' THEN 2 WHEN 'Term 3' THEN 3 ELSE 9 END,
+                 IFNULL(p.payroll_month, 0),
                  e.last_name, e.first_name
     """, q_args)
     rows = cur.fetchall()
@@ -20197,6 +20205,7 @@ def payroll_hub():
         rows=rows,
         TERMS=TERMS,
         sel_term=sel_term,
+        sel_month=sel_month,
         sel_year=sel_year,
         sel_emp=sel_emp,
         default_year=default_year,
@@ -20319,6 +20328,7 @@ def payroll_export():
     import csv
     import io
     sel_term = request.args.get("term") or ""
+    sel_month = request.args.get("month") or ""
     sel_year = request.args.get("year") or ""
     sel_emp = request.args.get("employee_id") or ""
 
@@ -20328,6 +20338,10 @@ def payroll_export():
     if sel_term:
         q_sql.append("p.term = %s")
         q_args.append(sel_term)
+        
+    if sel_month:
+        q_sql.append("p.payroll_month = %s")
+        q_args.append(int(sel_month))
     if sel_year:
         q_sql.append("p.year = %s")
         q_args.append(sel_year)
@@ -20351,14 +20365,16 @@ def payroll_export():
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Employee", "Designation", "Term", "Year",
+    writer.writerow(["Employee", "Designation", "Term", "Month", "Year",
                      "Expected Salary", "Bonus", "Allowance", "Total",
                      "Paid Amount", "Status", "Last Paid"])
     for r in rows:
         fullname = f"{(r['last_name'] or '')}, {(r['first_name'] or '')} {r['Middle_name'] or ''}".strip()
+        MONTHS = ["", "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+        mname = MONTHS[int(r["payroll_month"] or 0)] if (r.get("payroll_month") is not None) else ""
         writer.writerow([
             fullname, r["designation"] or "",
-            r["term"], r["year"],
+            r["term"], mname, r["year"],
             r["expected_salary"] or 0, r["bonus"] or 0, r["allowance"] or 0,
             r["total"] or 0, r["paid_amount"] or 0, r["status"], r["date_paid"] or ""
         ])
@@ -20389,6 +20405,7 @@ def payroll_report():
 
     # Filters
     sel_term = request.args.get("term") or ""
+    sel_month = request.args.get("month") or ""
     sel_year = request.args.get("year") or ""
     sel_emp = request.args.get("employee_id") or ""
 
@@ -20396,6 +20413,9 @@ def payroll_report():
     if sel_term:
         q_sql.append("p.term = %s")
         q_args.append(sel_term)
+    if sel_term:
+        q_sql.append("p.payroll_month = %s")
+        q_args.append(int(sel_month))
     if sel_year:
         q_sql.append("p.year = %s")
         q_args.append(sel_year)
@@ -20434,10 +20454,11 @@ def payroll_report():
 
     return render_template(
         "payroll_report.html",
-        employees=employees,
+        employees=employees, 
         rows=rows,
         TERMS=TERMS_LOCAL,
         sel_term=sel_term,
+        sel_month=sel_month,
         sel_year=sel_year,
         sel_emp=sel_emp,
         summary=summary,
@@ -22902,6 +22923,237 @@ def mark_sheet():
         streams=streams
     )
 
+
+@app.route("/mark_sheet/excel")
+@require_role("admin", "teacher", "headteacher", "dos", "classmanager", "deputyheadteacher")
+def mark_sheet_excel():
+    from io import BytesIO
+    from collections import defaultdict
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Font, Alignment
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    # ---- filters (same as others) ----
+    ay = get_active_academic_year()
+    class_name = (request.args.get("class_name") or "P7").strip()
+    stream = (request.args.get("stream") or "").strip()
+    term = (request.args.get("term") or ay["current_term"]).strip()
+    year = int(request.args.get("year") or ay["year"])
+    school_title = current_app.config.get("SCHOOL_NAME", "Your School")
+
+    # ---- data build (same logic as HTML/PDF) ----
+    conn = get_db_connection()
+
+    subjects = subjects_with_marks(conn, class_name, stream, term, year)
+    subjects = sorted(
+        subjects,
+        key=lambda s: (0 if ((s.get("code") or s["name"]).strip().upper() in CORE_CODES) else 1, s["name"])
+    )
+
+    cur = conn.cursor(dictionary=True)
+    params = [class_name]
+    extra_stream_where = ""
+    if stream:
+        extra_stream_where = " AND COALESCE(stream,'') = %s"
+        params.append(stream)
+
+    cur.execute(f"""
+        SELECT id, student_number,
+               first_name, COALESCE(Middle_name,'') AS middle_name, last_name,
+               class_name, COALESCE(stream,'') AS stream
+        FROM students
+        WHERE archived = 0
+          AND class_name = %s
+          {extra_stream_where}
+        ORDER BY last_name, first_name
+    """, params)
+    students = cur.fetchall() or []
+
+    student_ids = [s["id"] for s in students]
+
+    cur = conn.cursor(dictionary=True)
+    score_rows = []
+    if student_ids:
+        fmt_ids = ",".join(["%s"] * len(student_ids))
+        cur.execute(f"""
+            SELECT rs.student_id, rs.subject_id,
+                   rs.other_mark, rs.holiday_mark, rs.bot_mark, rs.midterm_mark, rs.eot_mark, rs.ca_mark,
+                   rs.average_mark
+              FROM record_score rs
+             WHERE rs.term = %s AND rs.year = %s
+               AND rs.student_id IN ({fmt_ids})
+        """, [term, year, *student_ids])
+        score_rows = cur.fetchall() or []
+
+    gcur = conn.cursor(dictionary=True)
+    gcur.execute("""
+        SELECT grade, lower_limit, upper_limit
+          FROM grading_scale
+         ORDER BY lower_limit DESC
+    """)
+    SCALE = gcur.fetchall() or []
+    gcur.close()
+
+    def grade_from_scale(score: float) -> str:
+        try:
+            s = float(score)
+        except Exception:
+            return "NG"
+        for r in SCALE:
+            lo, hi = float(r["lower_limit"]), float(r["upper_limit"])
+            if lo <= s <= hi:
+                return (r["grade"] or "").strip()
+        return "NG"
+
+    def pick_average_row_score(r: dict):
+        if r.get("average_mark") is not None:
+            return float(r["average_mark"])
+        return _mean_nonnull([r.get(k) for k in COMPONENT_FIELDS])
+
+    per = defaultdict(dict)
+    for r in score_rows:
+        sc = pick_average_row_score(r)
+        if sc is not None:
+            per[r["student_id"]][r["subject_id"]] = sc
+
+    # keep subjects that have any marks
+    if student_ids and subjects:
+        subj_keep = []
+        for subj in subjects:
+            sid_subj = subj["id"]
+            has_any = any(per.get(stid, {}).get(sid_subj) is not None for stid in student_ids)
+            if has_any:
+                subj_keep.append(subj)
+        subjects = subj_keep
+
+    def _is_core(subj: dict) -> bool:
+        code = (subj.get("code") or "").strip().upper()
+        name = (subj.get("name") or "").strip().lower()
+        if code in CORE_CODES: return True
+        if name.startswith("eng"): return True
+        if name.startswith(("mat", "math")): return True
+        if name.startswith("sci"): return True
+        if name in {"sst", "soc. studies", "social studies", "social std", "socialstudies"}: return True
+        return False
+
+    rows = []
+    for idx, s in enumerate(students, start=1):
+        sid = s["id"]
+        total = 0.0
+        n = 0
+        agg_sum = 0
+        agg_cnt = 0
+        cells = []
+
+        for subj in subjects:
+            m = per.get(sid, {}).get(subj["id"])
+            if m is None:
+                cells.append({"mark": None, "text": ""})
+                continue
+            g = grade_from_scale(m) or ""
+            cells.append({"mark": m, "text": f"{m:.0f} ({g})", "grade": g})
+            total += m; n += 1
+            if _is_core(subj) and g in AGG_MAP:
+                agg_sum += AGG_MAP[g]; agg_cnt += 1
+
+        ave = round(total / n, 1) if n else 0.0
+        agg = agg_sum if agg_cnt == 4 else None
+        div = division_from_aggregate(agg) if agg is not None else "NG"
+
+        rows.append({
+            "no": idx,
+            "student_number": s["student_number"],
+            "full_name": f"{s['first_name']} {s['middle_name']} {s['last_name']}".replace("  "," ").strip(),
+            "cells": cells,
+            "total": round(total, 0),
+            "ave": ave,
+            "agg": agg if agg is not None else "",
+            "div": div,
+        })
+
+    # positions
+    ranked = sorted(rows, key=lambda r: (-float(r["total"]), r["full_name"]))
+    pos = 0; seen = 0; prev = None
+    for r in ranked:
+        seen += 1
+        if r["total"] != prev:
+            pos = seen; prev = r["total"]
+        r["pos"] = pos
+
+    pos_by_stuno = {r["student_number"]: r["pos"] for r in ranked}
+    for r in rows:
+        r["pos"] = pos_by_stuno.get(r["student_number"], "")
+
+    cur.close()
+    conn.close()
+
+    # ---- EXCEL BUILD ----
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Mark Sheet"
+
+    # title rows
+    ws["A1"] = school_title
+    ws["A2"] = f"Mark Sheet {class_name} {stream} — {term} {year}"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"].font = Font(bold=True, size=12)
+
+    # headers
+    subj_headers = [(s.get("code") or s["name"]) for s in subjects]
+    headers = ["No", "Student No.", "Name", *subj_headers, "Total", "AVE", "AGG", "DIV", "POS"]
+    start_row = 4
+    ws.append([""] * len(headers))  # keeps row indexing clean
+    ws.delete_rows(start_row, 1)
+    ws.append(headers)
+
+    header_row = start_row
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=header_row, column=col)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # data rows
+    for r in rows:
+        line = [
+            r["no"],
+            r["student_number"],
+            r["full_name"],
+        ]
+        # subject cells as "80 (A)" like your UI/PDF
+        for c in r["cells"]:
+            line.append(c.get("text") if isinstance(c, dict) else str(c))
+        line += [r["total"], r["ave"], r["agg"], r["div"], r["pos"]]
+        ws.append(line)
+
+    # auto widths (safe)
+    for i, h in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = max(10, min(35, len(str(h)) + 2))
+    ws.column_dimensions["C"].width = 28  # name wider
+
+    # add a formatted table (nice in Excel)
+    end_row = ws.max_row
+    end_col = len(headers)
+    tab = Table(displayName="MarkSheetTable", ref=f"A{header_row}:"
+                                          f"{get_column_letter(end_col)}{end_row}")
+    tab.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False, showLastColumn=False,
+        showRowStripes=True, showColumnStripes=False
+    )
+    ws.add_table(tab)
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+
+    filename = f"Mark_Sheet_{class_name}_{stream}_{term}_{year}.xlsx".replace(" ", "_")
+    return send_file(
+        out,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.route("/mark_sheet/pdf_reportlab")
