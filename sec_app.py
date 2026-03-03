@@ -20217,7 +20217,8 @@ def payroll_hub():
 @require_role("admin", "bursar", "director")
 def payroll_add_payment(pid):
     """Add a payment to payroll AND mirror it into expenses (Salaries)."""
-    # Amount
+
+    # ---- validate amount ----
     try:
         amount = float(request.form.get("amount") or 0)
         if amount <= 0:
@@ -20229,50 +20230,77 @@ def payroll_add_payment(pid):
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
 
-    # Load row + employee (for description)
-    cur.execute("""
-        SELECT p.id, p.employee_id, p.term, p.year, p.total, p.paid_amount,
-               e.first_name, e.Middle_name, e.last_name, e.designation
-        FROM payroll p
-        LEFT JOIN employees e ON e.id = p.employee_id
-        WHERE p.id=%s
-    """, (pid,))
-    row = cur.fetchone()
+    try:
+        # ---- load payroll row + employee ----
+        cur.execute("""
+            SELECT p.id, p.employee_id, p.term, p.year, p.payroll_month, p.total, p.paid_amount,
+                   e.first_name, e.Middle_name, e.last_name, e.designation
+            FROM payroll p
+            LEFT JOIN employees e ON e.id = p.employee_id
+            WHERE p.id = %s
+        """, (pid,))
+        row = cur.fetchone()
 
-    if not row:
-        conn.close()
-        flash("Payroll row not found.", "warning")
+        if not row:
+            flash("Payroll row not found.", "warning")
+            return redirect(url_for("payroll_hub"))
+
+        old_paid = float(row.get("paid_amount") or 0)
+        total = float(row.get("total") or 0)
+
+        # ---- update payroll ----
+        new_paid = old_paid + amount
+        status = _payroll_status(total, new_paid)
+
+        cur.execute("""
+            UPDATE payroll
+               SET paid_amount = %s,
+                   status = %s,
+                   date_paid = NOW()
+             WHERE id = %s
+        """, (new_paid, status, pid))
+
+        # ---- mirror to expenses ----
+        cat_id = get_or_create_expense_category(conn, "Salaries")
+
+        emp_name = (
+            f"{(row.get('last_name') or '').strip()}, "
+            f"{(row.get('first_name') or '').strip()} "
+            f"{(row.get('Middle_name') or '').strip()}"
+        ).strip().strip(",")
+
+        # include month in description
+        pm = (row.get("payroll_month") or "").strip()
+        period = f"{pm} — {row['term']} {row['year']}" if pm else f"{row['term']} {row['year']}"
+
+        description = f"Salary payment - {emp_name} — {period}"
+        recorded_by = session.get("username", "system")
+
+        cur.execute("""
+            INSERT INTO expenses
+                (description, amount, term, year, date_spent, category_id, recorded_by, type)
+            VALUES
+                (%s, %s, %s, %s, NOW(), %s, %s, 'staff_pay')
+        """, (description, amount, row["term"], row["year"], cat_id, recorded_by))
+
+        conn.commit()
+        flash("Payment recorded and posted to expenses (Salaries).", "success")
         return redirect(url_for("payroll_hub"))
 
-    # Update payroll amounts + status
-    new_paid = (row["paid_amount"] or 0) + amount
-    status = _payroll_status(row["total"], new_paid)
-    cur.execute("""
-        UPDATE payroll
-           SET paid_amount = %s, status = %s, date_paid = NOW()
-         WHERE id = %s
-    """, (new_paid, status, pid))
+    except Exception as e:
+        conn.rollback()
+        flash(f"Failed to record payment: {e}", "danger")
+        return redirect(url_for("payroll_hub"))
 
-    # Ensure "Salaries" category exists, then insert into expenses
-    cat_id = get_or_create_expense_category(conn, "Salaries")
-    emp_name = f"{(row['last_name'] or '').strip()}, {(row['first_name'] or '').strip()} {(row['Middle_name'] or '' ).strip()}".strip(
-    ).strip(',')
-    MONTHS = ["", "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    mname = MONTHS[int(row.get("payroll_month") or 0)] if row.get("payroll_month") else ""
-    period = f"{row['term']} {mname} {row['year']}".replace(" ", " ").strip()
-    description = f"Salary payment - {emp_name} — {period}"
-    recorded_by = session.get("username", "system")
-
-    cur.execute("""
-        INSERT INTO expenses (description, amount, term, year, date_spent, category_id, recorded_by, type)
-        VALUES (%s, %s, %s, %s, NOW(), %s, %s, 'staff_pay')
-    """, (description, amount, row["term"], row["year"], cat_id, recorded_by))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    flash("Payment recorded and posted to expenses (Salaries).", "success")
-    return redirect(url_for("payroll_hub"))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.route("/payroll/edit/<int:pid>", methods=["POST"])
