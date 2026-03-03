@@ -20270,7 +20270,7 @@ def payroll_add_payment(pid):
         ).strip().strip(",")
 
         # include month in description
-        pm = (row.get("payroll_month") or "").strip()
+        pm = str(row.get("payroll_month") or "").strip()
         period = f"{pm} — {row['term']} {row['year']}" if pm else f"{row['term']} {row['year']}"
 
         description = f"Salary payment - {emp_name} — {period}"
