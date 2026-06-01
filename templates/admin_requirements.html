@@ -82,7 +82,7 @@
         <input type="number" name="qty" id="req_qty" class="form-control" value="1" min="1" {% if year_locked %}disabled{% endif %}>
       </div>
 
-      <div class="col-md-6">
+      <div class="col-md-5">
         <label class="form-label">Item Name *</label>
         <input name="name" id="req_name" class="form-control" required {% if year_locked %}disabled{% endif %}>
       </div>
@@ -90,6 +90,15 @@
       <div class="col-md-3">
         <label class="form-label">Amount (UGX)</label>
         <input type="number" step="0.01" name="amount" id="req_amount" class="form-control" required {% if year_locked %}disabled{% endif %}>
+      </div>
+
+      <div class="col-md-4">
+        <label class="form-label">Requirement Type</label>
+        <select name="is_virtual" id="req_is_virtual" class="form-select" {% if year_locked %}disabled{% endif %}>
+          <option value="0">Class-wide / Applies to all</option>
+          <option value="1">Virtual / Select at payment stage</option>
+        </select>
+        <div class="small text-muted">Virtual items are only charged when the bursar selects them during payment.</div>
       </div>
 
       <div class="col-12 text-end">
@@ -152,12 +161,14 @@
           <th>Group</th>
           <th>Class</th>
           <th>Section</th>
+          <th>Type</th>
           <th>Item</th>
           <th>Qty</th>
           <th>Amount (UGX)</th>
           <th>Action</th>
         </tr>
       </thead>
+
       <tbody>
         {% for r in items %}
         <tr>
@@ -167,6 +178,13 @@
           <td>{{ r.fee_group }}</td>
           <td>{{ r.class_name }}</td>
           <td>{{ r.section or 'All' }}</td>
+          <td>
+            {% if r.is_virtual %}
+              <span class="badge bg-warning text-dark">Virtual</span>
+            {% else %}
+              <span class="badge bg-success">Class-wide</span>
+            {% endif %}
+          </td>
           <td class="text-start">{{ r.name }}</td>
           <td>{{ r.qty }}</td>
           <td>{{ "{:,.0f}".format(r.amount or 0) }}</td>
@@ -182,7 +200,8 @@
                 '{{ r.section or '' }}',
                 '{{ r.name|e }}',
                 {{ r.qty or 1 }},
-                {{ r.amount or 0 }}
+                {{ r.amount or 0 }},
+                {{ r.is_virtual or 0 }}
               )">Edit</button>
 
             <form method="post" action="{{ url_for('admin_requirements_delete', rid=r.id) }}"
@@ -192,7 +211,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="10">No requirements found.</td></tr>
+        <tr><td colspan="11">No requirements found.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -200,7 +219,7 @@
 </div>
 
 <script>
-function fillReqEdit(id, year, termNo, feeGroup, cls, section, name, qty, amount) {
+function fillReqEdit(id, year, termNo, feeGroup, cls, section, name, qty, amount, isVirtual) {
   document.getElementById('req_id').value = id;
   document.getElementById('req_year').value = year || '';
   document.getElementById('req_term_no').value = (termNo === null ? '' : termNo);
@@ -210,6 +229,7 @@ function fillReqEdit(id, year, termNo, feeGroup, cls, section, name, qty, amount
   document.getElementById('req_name').value = name || '';
   document.getElementById('req_qty').value = qty || 1;
   document.getElementById('req_amount').value = amount || 0;
+  document.getElementById('req_is_virtual').value = String(isVirtual || 0);
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -218,6 +238,128 @@ function resetReqForm() {
   document.getElementById('req_name').value = '';
   document.getElementById('req_qty').value = 1;
   document.getElementById('req_amount').value = '';
+  document.getElementById('req_is_virtual').value = '0';
 }
 </script>
 {% endblock %}
+
+
+
+
+def get_class_requirements(class_name: str, term: str | None):
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT id, name, qty, amount, term, COALESCE(is_virtual,0) AS is_virtual
+        FROM requirements
+        WHERE class_name = %s
+          AND COALESCE(is_virtual,0) = 0
+          AND (term = %s OR term IS NULL OR term = '')
+        ORDER BY name
+    """, (class_name, term))
+    rows = cur.fetchall() or []
+    cur.close()
+    conn.close()
+    return rows
+
+
+
+def get_virtual_requirements_for_payment(class_name: str, term: str | None, year: int | None = None):
+    """
+    Returns virtual requirements for the selected student's class.
+    These do not automatically become expected requirements.
+    They only apply when bursar selects them during payment.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
+    if year:
+        cur.execute("""
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                term,
+                COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 1
+              AND year = %s
+              AND (term = %s OR term IS NULL OR term = '')
+            ORDER BY name
+        """, (class_name, year, term))
+    else:
+        cur.execute("""
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                term,
+                COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 1
+              AND (term = %s OR term IS NULL OR term = '')
+            ORDER BY name
+        """, (class_name, term))
+
+    rows = cur.fetchall() or []
+    cur.close()
+    conn.close()
+    return rows
+
+
+
+def requirements_due(student):
+    """
+    Requirements configured for the student's class.
+    This intentionally excludes virtual requirements so that virtual items
+    do not become due for every student automatically.
+    """
+    ay = get_active_ay()
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute("SHOW COLUMNS FROM requirements")
+    cols = [c["Field"] if "Field" in c else c.get("name") for c in cur.fetchall()]
+    cur.close()
+
+    cur = conn.cursor(dictionary=True)
+
+    if "term" in cols:
+        cur.execute("""
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                COALESCE(term,'') AS term,
+                COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 0
+              AND (term IS NULL OR term = '' OR term = %s)
+            ORDER BY name
+        """, (student["class_name"], ay["term"]))
+    else:
+        cur.execute("""
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                '' AS term,
+                COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 0
+            ORDER BY name
+        """, (student["class_name"],))
+
+    rows = cur.fetchall() or []
+    cur.close()
+    conn.close()
+    return rows
+

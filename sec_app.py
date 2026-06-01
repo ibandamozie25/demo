@@ -6618,36 +6618,103 @@ def carried_forward(student_id, term, year):
 
 
 def requirements_due(student):
-    """Requirements configured for the student's class (term-aware if column exists)."""
+    """
+    Requirements configured for the student's class.
+    This intentionally excludes virtual requirements so that virtual items
+    do not become due for every student automatically.
+    """
     ay = get_active_ay()
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
+
     cur.execute("SHOW COLUMNS FROM requirements")
-    cols = [c["name"] for c in cur.fetchall()]
+    cols = [c["Field"] if "Field" in c else c.get("name") for c in cur.fetchall()]
     cur.close()
+
+    cur = conn.cursor(dictionary=True)
+
     if "term" in cols:
-        cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, name, qty, amount, COALESCE(term,'') AS term
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                COALESCE(term,'') AS term,
+                COALESCE(is_virtual,0) AS is_virtual
             FROM requirements
             WHERE class_name = %s
-              AND (term IS NULL OR term = %s)
+              AND COALESCE(is_virtual,0) = 0
+              AND (term IS NULL OR term = '' OR term = %s)
             ORDER BY name
         """, (student["class_name"], ay["term"]))
-        rows = cur.fetchall()
-        cur.close()
     else:
-        cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, name, qty, amount, '' AS term
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                '' AS term,
+                COALESCE(is_virtual,0) AS is_virtual
             FROM requirements
             WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 0
             ORDER BY name
         """, (student["class_name"],))
-        rows = cur.fetchall()
-        cur.close()
+
+    rows = cur.fetchall() or []
+    cur.close()
     conn.close()
     return rows
+    
+def get_virtual_requirements_for_payment(class_name: str, term: str | None, year: int | None = None):
+    """
+    Returns virtual requirements for the selected student's class.
+    These do not automatically become expected requirements.
+    They only apply when bursar selects them during payment.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
+    if year:
+        cur.execute("""
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                term,
+                COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 1
+              AND year = %s
+              AND (term = %s OR term IS NULL OR term = '')
+            ORDER BY name
+        """, (class_name, year, term))
+    else:
+        cur.execute("""
+            SELECT 
+                id,
+                name,
+                qty,
+                amount,
+                term,
+                COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE class_name = %s
+              AND COALESCE(is_virtual,0) = 1
+              AND (term = %s OR term IS NULL OR term = '')
+            ORDER BY name
+        """, (class_name, term))
+
+    rows = cur.fetchall() or []
+    cur.close()
+    conn.close()
+    return rows
+
+
 
 
 def requirements_paid_sum(student_id, term, year):
@@ -6763,17 +6830,19 @@ def resolve_student_id(conn, student_number=None):
     return row["id"] if row else None
 
 
+
 def get_class_requirements(class_name: str, term: str | None):
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, name, qty, amount, term
+        SELECT id, name, qty, amount, term, COALESCE(is_virtual,0) AS is_virtual
         FROM requirements
         WHERE class_name = %s
+          AND COALESCE(is_virtual,0) = 0
           AND (term = %s OR term IS NULL OR term = '')
         ORDER BY name
     """, (class_name, term))
-    rows = cur.fetchall()
+    rows = cur.fetchall() or []
     cur.close()
     conn.close()
     return rows
@@ -18182,6 +18251,15 @@ def admin_requirements():
     conn = get_db_connection()
     ensure_requirements_schema(conn)
 
+    # Ensure virtual requirement column exists
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("ALTER TABLE requirements ADD COLUMN is_virtual TINYINT(1) NOT NULL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    cur.close()
+
     fee_groups = ["Old", "New"]
     active_year, active_term, active_term_no = get_active_year_term()
 
@@ -18200,11 +18278,13 @@ def admin_requirements():
         term_no_raw = (f.get("term_no") or "").strip()
         fee_group = (f.get("fee_group") or "Old").strip() or "Old"
         section = (f.get("section") or "").strip() or None
+        is_virtual = 1 if (f.get("is_virtual") or "0") == "1" else 0
 
         try:
             qty = int(qty_raw)
         except Exception:
             qty = 1
+
         try:
             amount = float(amt_raw)
         except Exception:
@@ -18223,7 +18303,6 @@ def admin_requirements():
         if fee_group not in fee_groups:
             fee_group = "Old"
 
-        # term_label stored in requirements.term (generated term_no depends on this)
         term_label = term_no_to_label(term_no) if term_no else None
 
         if not class_name or not name:
@@ -18231,25 +18310,27 @@ def admin_requirements():
             flash("Class and item name are required.", "warning")
             return redirect(url_for("admin_requirements"))
 
-        # LOCK CHECK
         if is_academic_year_locked(year_val):
             conn.close()
             flash(f"Year {year_val} is locked. You cannot change requirements for a locked year.", "warning")
             return redirect(url_for("admin_requirements", year=year_val, fee_group=fee_group))
 
         cur = conn.cursor(dictionary=True)
+
         try:
             old_class = old_term_no = old_year = old_group = None
 
             if rid:
                 cur.execute("""
                     SELECT class_name, year, term_no, fee_group
-                    FROM requirements WHERE id=%s
+                    FROM requirements
+                    WHERE id=%s
                 """, (rid,))
                 old = cur.fetchone() or {}
+
                 old_class = (old.get("class_name") or "").strip()
                 old_year = int(old.get("year") or 0)
-                old_term_no = old.get("term_no")  # can be NULL
+                old_term_no = old.get("term_no")
                 old_group = (old.get("fee_group") or "").strip()
 
                 cur.execute("""
@@ -18261,11 +18342,23 @@ def admin_requirements():
                            term=%s,
                            year=%s,
                            fee_group=%s,
-                           section=%s
+                           section=%s,
+                           is_virtual=%s
                      WHERE id=%s
-                """, (class_name, name, qty, amount, term_label, year_val, fee_group, section, rid))
+                """, (
+                    class_name,
+                    name,
+                    qty,
+                    amount,
+                    term_label,
+                    year_val,
+                    fee_group,
+                    section,
+                    is_virtual,
+                    rid
+                ))
+
             else:
-                # Manual upsert by (class, name, year, term_no, fee_group)
                 cur.execute("""
                     SELECT id
                     FROM requirements
@@ -18279,6 +18372,7 @@ def admin_requirements():
                       )
                     LIMIT 1
                 """, (class_name, name, year_val, fee_group, term_no, term_no))
+
                 existing = cur.fetchone()
 
                 if existing:
@@ -18287,27 +18381,56 @@ def admin_requirements():
                            SET qty=%s,
                                amount=%s,
                                term=%s,
-                               section=%s
+                               section=%s,
+                               is_virtual=%s
                          WHERE id=%s
-                    """, (qty, amount, term_label, section, existing["id"]))
+                    """, (
+                        qty,
+                        amount,
+                        term_label,
+                        section,
+                        is_virtual,
+                        existing["id"]
+                    ))
                 else:
                     cur.execute("""
-                        INSERT INTO requirements (class_name, name, qty, amount, term, year, fee_group, section)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (class_name, name, qty, amount, term_label, year_val, fee_group, section))
+                        INSERT INTO requirements (
+                            class_name,
+                            name,
+                            qty,
+                            amount,
+                            term,
+                            year,
+                            fee_group,
+                            section,
+                            is_virtual
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (
+                        class_name,
+                        name,
+                        qty,
+                        amount,
+                        term_label,
+                        year_val,
+                        fee_group,
+                        section,
+                        is_virtual
+                    ))
 
             conn.commit()
             flash("Requirement saved.", "success")
 
-            # recompute new side
-            _recompute_class(class_name, term_no)
+            # Recompute only normal class-wide requirements.
+            # Virtual requirements are paid only when selected at payment stage.
+            if is_virtual == 0:
+                _recompute_class(class_name, term_no)
 
-            # recompute old side if moved (only if editing)
             if rid and old_class:
                 moved = (
                     old_class != class_name
                     or old_year != int(year_val)
-                    or (old_term_no != term_no)  # both can be None
+                    or (old_term_no != term_no)
                     or (old_group != fee_group)
                 )
                 if moved:
@@ -18319,11 +18442,20 @@ def admin_requirements():
                 flash("Duplicate item for this class/term/year/group.", "danger")
             else:
                 flash(f"Failed to save: {e}", "danger")
+        except Exception as e:
+            conn.rollback()
+            flash(f"Failed to save: {e}", "danger")
         finally:
             cur.close()
             conn.close()
 
-        return redirect(url_for("admin_requirements", year=year_val, term_no=(term_no or ""), fee_group=fee_group, class_name=class_name))
+        return redirect(url_for(
+            "admin_requirements",
+            year=year_val,
+            term_no=(term_no or ""),
+            fee_group=fee_group,
+            class_name=class_name
+        ))
 
     # ---------- GET ----------
     q_class = (request.args.get("class_name") or "").strip()
@@ -18336,11 +18468,11 @@ def admin_requirements():
     except Exception:
         year_filter = active_year
 
-    # term filter is optional; if empty, show all (including generic)
     try:
         term_no_filter = int(q_term_no) if q_term_no else None
     except Exception:
         term_no_filter = None
+
     if term_no_filter not in (None, 1, 2, 3):
         term_no_filter = None
 
@@ -18354,16 +18486,24 @@ def admin_requirements():
         where.append("class_name=%s")
         params.append(q_class)
 
-    if term_no_filter is None:
-        # show all terms + generic
-        pass
-    else:
+    if term_no_filter is not None:
         where.append("(term_no=%s OR term_no IS NULL)")
         params.append(term_no_filter)
 
     cur = conn.cursor(dictionary=True)
     cur.execute(f"""
-        SELECT id, class_name, name, qty, amount, term, year, term_no, fee_group, section
+        SELECT 
+            id,
+            class_name,
+            name,
+            qty,
+            amount,
+            term,
+            year,
+            term_no,
+            fee_group,
+            section,
+            COALESCE(is_virtual,0) AS is_virtual
           FROM requirements
          WHERE {' AND '.join(where)}
          ORDER BY class_name, COALESCE(term,''), name
@@ -18375,6 +18515,7 @@ def admin_requirements():
     cur.execute("SELECT DISTINCT class_name FROM classes ORDER BY 1")
     classes = [r["class_name"] for r in (cur.fetchall() or [])]
     cur.close()
+
     conn.close()
 
     return render_template(
@@ -18383,23 +18524,17 @@ def admin_requirements():
         classes=classes,
         terms=TERMS,
         fee_groups=fee_groups,
-
         default_year=year_filter,
         default_term_no=(term_no_filter or ""),
         default_fee_group=group_filter,
-
         q_class=q_class,
         q_year=str(year_filter),
         q_term_no=str(term_no_filter or ""),
         q_fee_group=group_filter,
-
         year_locked=locked,
         active_year=active_year,
         active_term_no=active_term_no
     )
-
-
-
 
 
 
@@ -18408,29 +18543,46 @@ def admin_requirements():
 def admin_requirements_delete(rid):
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
+
     try:
         cur.execute("""
-            SELECT class_name, year, term_no, fee_group
-            FROM requirements WHERE id=%s
+            SELECT class_name, year, term_no, fee_group, COALESCE(is_virtual,0) AS is_virtual
+            FROM requirements
+            WHERE id=%s
         """, (rid,))
         row = cur.fetchone() or {}
+
         cls = row.get("class_name")
         y = int(row.get("year") or 0)
-        tno = row.get("term_no")  # can be None
+        tno = row.get("term_no")
         grp = (row.get("fee_group") or "Old")
+        is_virtual = int(row.get("is_virtual") or 0)
 
         if y and is_academic_year_locked(y):
             flash(f"Year {y} is locked. Cannot delete requirements.", "warning")
-            return redirect(url_for("admin_requirements", year=y, term_no=(tno or ""), fee_group=grp, class_name=cls))
+            return redirect(url_for(
+                "admin_requirements",
+                year=y,
+                term_no=(tno or ""),
+                fee_group=grp,
+                class_name=cls
+            ))
 
         cur.execute("DELETE FROM requirements WHERE id=%s", (rid,))
         conn.commit()
 
-        if cls:
+        if cls and is_virtual == 0:
             _recompute_class(cls, tno)
 
         flash("Requirement deleted.", "success")
-        return redirect(url_for("admin_requirements", year=y, term_no=(tno or ""), fee_group=grp, class_name=cls))
+
+        return redirect(url_for(
+            "admin_requirements",
+            year=y,
+            term_no=(tno or ""),
+            fee_group=grp,
+            class_name=cls
+        ))
 
     except Exception as e:
         conn.rollback()
@@ -18442,6 +18594,8 @@ def admin_requirements_delete(rid):
         except Exception:
             pass
         conn.close()
+
+
 
 # ===================== PROMOTIONS: HISTORY + UNDO + BATCH =====================
 
@@ -21352,58 +21506,89 @@ def start_payment():
     q_student_id = request.values.get("student_id", type=int)
     q_student_number = (request.values.get("student_number") or "").strip()
 
-    # ---------- helpers ----------
     def _get_student_by_id(stid: int):
         if not stid:
             return None
+
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
-                   last_name, class_name, stream, section
+            SELECT 
+                id,
+                student_number,
+                first_name,
+                COALESCE(Middle_name,'') AS middle_name,
+                last_name,
+                class_name,
+                stream,
+                section
               FROM students
-             WHERE id=%s AND archived=0
+             WHERE id=%s
+               AND archived=0
         """, (stid,))
         row = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return row
 
     def _get_student_by_number(snum: str):
         if not snum:
             return None
+
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS middle_name,
-                   last_name, class_name, stream, section
+            SELECT 
+                id,
+                student_number,
+                first_name,
+                COALESCE(Middle_name,'') AS middle_name,
+                last_name,
+                class_name,
+                stream,
+                section
               FROM students
-             WHERE TRIM(LOWER(student_number))=TRIM(LOWER(%s)) AND archived=0
+             WHERE TRIM(LOWER(student_number))=TRIM(LOWER(%s))
+               AND archived=0
              LIMIT 1
         """, (snum,))
         row = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return row
 
     def _all_students_for_dropdown():
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, student_number, first_name, COALESCE(Middle_name,'') AS m,
-                   last_name, class_name, COALESCE(stream,'') AS stream
+            SELECT 
+                id,
+                student_number,
+                first_name,
+                COALESCE(Middle_name,'') AS m,
+                last_name,
+                class_name,
+                COALESCE(stream,'') AS stream
               FROM students
              WHERE archived=0
              ORDER BY last_name, first_name
         """)
-        rows = cur.fetchall()
-        cur.close(); conn.close()
+        rows = cur.fetchall() or []
+        cur.close()
+        conn.close()
         return rows
 
-    # ---------- POST: record payment (flow unchanged, INSERTS FIXED) ----------
+    # ---------- POST: record payment ----------
     if request.method == "POST":
         sid = request.form.get("sid", type=int)
+
         if not sid:
             flash("Select a student before recording payment.", "warning")
-            return redirect(url_for("start_payment", student_id=q_student_id, term=sel_term))
+            return redirect(url_for(
+                "start_payment",
+                student_id=q_student_id,
+                term=sel_term
+            ))
 
         payment_type = (request.form.get("payment_type") or "school_fees").strip()
         method = (request.form.get("method") or "cash").strip()
@@ -21414,38 +21599,66 @@ def start_payment():
         today = datetime.now().strftime("%Y-%m-%d")
 
         conn = get_db_connection()
+
         try:
             if payment_type == "requirements":
                 ids = request.form.getlist("req_id[]")
                 names = request.form.getlist("req_name[]")
                 amts = request.form.getlist("req_amount[]")
+                item_types = request.form.getlist("req_type[]")
+
+                if not names:
+                    flash("Select at least one requirement to record.", "warning")
+                    return redirect(url_for("start_payment", student_id=sid, term=term))
 
                 total = 0.0
-                for rid, rname, ramt in zip(ids, names, amts):
+
+                for rid, rname, ramt, rtype in zip(ids, names, amts, item_types):
                     try:
                         amt = float(ramt)
                     except ValueError:
                         amt = 0.0
+
                     if amt <= 0:
                         continue
 
                     total += amt
+
+                    payment_item = "virtual_requirement" if str(rtype) == "1" else "requirement"
+
+                    # keep transport identifiable
+                    if str(rid).lower() == "transport" or "transport" in (rname or "").lower():
+                        payment_item = "transport"
+
                     cur = conn.cursor(dictionary=True)
                     cur.execute("""
                         INSERT INTO fees (
-                            student_id, term, year,
+                            student_id,
+                            term,
+                            year,
                             amount_paid,
-                            requirement_name, req_term,
-                            date_paid, method, comment,
-                            payment_type, recorded_by,
+                            requirement_name,
+                            req_term,
+                            date_paid,
+                            method,
+                            comment,
+                            payment_type,
+                            recorded_by,
                             payment_item
-                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'requirements',%s,'transport')
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'requirements',%s,%s)
                     """, (
-                        sid, term, year,
+                        sid,
+                        term,
+                        year,
                         amt,
-                        rname, term,
-                        today, method, comment,
-                        recorded_by
+                        rname,
+                        term,
+                        today,
+                        method,
+                        comment,
+                        recorded_by,
+                        payment_item
                     ))
                     cur.close()
 
@@ -21454,6 +21667,7 @@ def start_payment():
 
             else:
                 raw = (request.form.get("amount_paid") or "0").strip()
+
                 try:
                     amount_paid = float(raw)
                 except ValueError:
@@ -21461,27 +21675,43 @@ def start_payment():
 
                 if amount_paid <= 0:
                     flash("Amount must be greater than zero.", "warning")
-                    return redirect(url_for("start_payment", student_id=q_student_id, term=term))
+                    return redirect(url_for(
+                        "start_payment",
+                        student_id=q_student_id,
+                        term=term
+                    ))
 
                 cur = conn.cursor(dictionary=True)
                 cur.execute("""
                     INSERT INTO fees (
-                        student_id, term, year,
+                        student_id,
+                        term,
+                        year,
                         amount_paid,
-                        date_paid, method, comment,
-                        payment_type, recorded_by
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,'school_fees',%s)
+                        date_paid,
+                        method,
+                        comment,
+                        payment_type,
+                        recorded_by
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,'school_fees',%s)
                 """, (
-                    sid, term, year,
+                    sid,
+                    term,
+                    year,
                     amount_paid,
-                    today, method, comment,
+                    today,
+                    method,
+                    comment,
                     recorded_by
                 ))
+
                 fee_id = cur.lastrowid
                 conn.commit()
                 cur.close()
 
                 flash("Fees payment recorded.", "success")
+
                 try:
                     current_app.logger.info(f"[PRINT] start_payment -> printing id={fee_id}")
                     handle_payment_and_print(fee_id)
@@ -21498,8 +21728,10 @@ def start_payment():
 
     # ---------- GET ----------
     student = None
+
     if q_student_id:
         student = _get_student_by_id(q_student_id)
+
     if not student and q_student_number:
         student = _get_student_by_number(q_student_number)
         if student:
@@ -21507,28 +21739,49 @@ def start_payment():
 
     students_list = _all_students_for_dropdown()
     reqs, fin, transport = [], None, None
+
     try:
         routes = transport_get_routes()
     except Exception:
         routes = []
 
     if student:
+        # Normal class-wide requirements
         reqs = get_class_requirements(student["class_name"], sel_term) or []
 
+        # Virtual requirements: visible for selection at payment stage only
+        virtual_reqs = get_virtual_requirements_for_payment(
+            student["class_name"],
+            sel_term,
+            current_year
+        ) or []
+
+        reqs = reqs + virtual_reqs
+
         term_no = term_to_no(sel_term) or 1
+
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT TRIM(LOWER(requirement_name)) AS nm, COALESCE(SUM(amount_paid),0) AS t
+            SELECT 
+                TRIM(LOWER(requirement_name)) AS nm,
+                COALESCE(SUM(amount_paid),0) AS t
               FROM fees
              WHERE student_id=%s
-               AND year=%s AND term_no=%s
+               AND year=%s
+               AND term_no=%s
                AND payment_type_norm IN('requirements','requirement')
                AND (comment IS NULL OR LOWER(comment) NOT LIKE '%void%')
              GROUP BY TRIM(LOWER(requirement_name))
         """, (student["id"], current_year, term_no))
-        paid_map = {r["nm"]: float(r["t"] or 0.0) for r in (cur.fetchall() or [])}
-        cur.close(); conn.close()
+
+        paid_map = {
+            r["nm"]: float(r["t"] or 0.0)
+            for r in (cur.fetchall() or [])
+        }
+
+        cur.close()
+        conn.close()
 
         for r in reqs:
             nm = ((r.get("name") or "").strip().lower())
@@ -21537,23 +21790,38 @@ def start_payment():
             r["is_paid"] = paid_map.get(nm, 0.0) >= amt - 0.0001
             r["paid_amount"] = paid_map.get(nm, 0.0)
 
-        # balances summary (unchanged call)
-        fin = compute_student_financials(student["id"], student["class_name"], sel_term, current_year)
+        fin = compute_student_financials(
+            student["id"],
+            student["class_name"],
+            sel_term,
+            current_year
+        )
 
         try:
-            tinfo = transport_subscription_info(student["id"], sel_term, current_year)
+            tinfo = transport_subscription_info(
+                student["id"],
+                sel_term,
+                current_year
+            )
         except Exception:
             tinfo = None
 
         if tinfo and float(tinfo.get("fare_per_term") or 0) > 0:
             conn = get_db_connection()
+
             try:
-                tp_paid = transport_paid_via_requirements(conn, student["id"], sel_term, current_year)
+                tp_paid = transport_paid_via_requirements(
+                    conn,
+                    student["id"],
+                    sel_term,
+                    current_year
+                )
             finally:
                 conn.close()
 
             fare = float(tinfo["fare_per_term"] or 0.0)
             is_paid = float(tp_paid or 0.0) >= fare - 0.0001
+
             transport = {
                 "route_name": tinfo["route_name"],
                 "fare_per_term": fare,
@@ -21561,6 +21829,7 @@ def start_payment():
                 "balance": max(fare - float(tp_paid or 0.0), 0.0),
                 "is_paid": is_paid,
             }
+
             reqs.append({
                 "id": "transport",
                 "name": f"Transport ({tinfo['route_name']})",
@@ -21568,6 +21837,7 @@ def start_payment():
                 "amount": fare,
                 "is_paid": is_paid,
                 "paid_amount": float(tp_paid or 0.0),
+                "is_virtual": 0,
             })
 
     return render_template(
@@ -21583,6 +21853,8 @@ def start_payment():
         routes=routes,
         student_number=q_student_number,
     )
+
+
 
 @app.route("/payments/confirm", methods=["POST"])
 @require_role("admin", "bursar", "clerk", "headteacher")
