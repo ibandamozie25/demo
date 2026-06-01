@@ -18254,7 +18254,10 @@ def admin_requirements():
     # Ensure virtual requirement column exists
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("ALTER TABLE requirements ADD COLUMN is_virtual TINYINT(1) NOT NULL DEFAULT 0")
+        cur.execute("""
+            ALTER TABLE requirements
+            ADD COLUMN is_virtual TINYINT(1) NOT NULL DEFAULT 0
+        """)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -18262,6 +18265,12 @@ def admin_requirements():
 
     fee_groups = ["Old", "New"]
     active_year, active_term, active_term_no = get_active_year_term()
+
+    # Load classes early because POST may use ALL
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT DISTINCT class_name FROM classes ORDER BY 1")
+    classes = [r["class_name"] for r in (cur.fetchall() or [])]
+    cur.close()
 
     # ---------- POST ----------
     if request.method == "POST":
@@ -18313,16 +18322,30 @@ def admin_requirements():
         if is_academic_year_locked(year_val):
             conn.close()
             flash(f"Year {year_val} is locked. You cannot change requirements for a locked year.", "warning")
+            return redirect(url_for(
+                "admin_requirements",
+                year=year_val,
+                term_no=(term_no or ""),
+                fee_group=fee_group,
+                class_name=("" if class_name == "ALL" else class_name)
+            ))
+
+        # Editing ALL at once is intentionally blocked
+        if rid and class_name == "ALL":
+            conn.close()
+            flash("Editing all classes at once is not supported. Edit each generated class item individually.", "warning")
             return redirect(url_for("admin_requirements", year=year_val, fee_group=fee_group))
 
         cur = conn.cursor(dictionary=True)
 
         try:
             old_class = old_term_no = old_year = old_group = None
+            old_is_virtual = 0
 
+            # ---------- EDIT EXISTING ----------
             if rid:
                 cur.execute("""
-                    SELECT class_name, year, term_no, fee_group
+                    SELECT class_name, year, term_no, fee_group, COALESCE(is_virtual,0) AS is_virtual
                     FROM requirements
                     WHERE id=%s
                 """, (rid,))
@@ -18332,6 +18355,7 @@ def admin_requirements():
                 old_year = int(old.get("year") or 0)
                 old_term_no = old.get("term_no")
                 old_group = (old.get("fee_group") or "").strip()
+                old_is_virtual = int(old.get("is_virtual") or 0)
 
                 cur.execute("""
                     UPDATE requirements
@@ -18358,83 +18382,108 @@ def admin_requirements():
                     rid
                 ))
 
-            else:
-                cur.execute("""
-                    SELECT id
-                    FROM requirements
-                    WHERE class_name=%s
-                      AND name=%s
-                      AND year=%s
-                      AND fee_group=%s
-                      AND (
-                           (term_no IS NULL AND %s IS NULL)
-                           OR (term_no = %s)
-                      )
-                    LIMIT 1
-                """, (class_name, name, year_val, fee_group, term_no, term_no))
+                conn.commit()
+                flash("Requirement updated.", "success")
 
-                existing = cur.fetchone()
+                # Recompute only if normal/class-wide requirement
+                if is_virtual == 0:
+                    _recompute_class(class_name, term_no)
 
-                if existing:
-                    cur.execute("""
-                        UPDATE requirements
-                           SET qty=%s,
-                               amount=%s,
-                               term=%s,
-                               section=%s,
-                               is_virtual=%s
-                         WHERE id=%s
-                    """, (
-                        qty,
-                        amount,
-                        term_label,
-                        section,
-                        is_virtual,
-                        existing["id"]
-                    ))
-                else:
-                    cur.execute("""
-                        INSERT INTO requirements (
-                            class_name,
-                            name,
-                            qty,
-                            amount,
-                            term,
-                            year,
-                            fee_group,
-                            section,
-                            is_virtual
-                        )
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (
-                        class_name,
-                        name,
-                        qty,
-                        amount,
-                        term_label,
-                        year_val,
-                        fee_group,
-                        section,
-                        is_virtual
-                    ))
-
-            conn.commit()
-            flash("Requirement saved.", "success")
-
-            # Recompute only normal class-wide requirements.
-            # Virtual requirements are paid only when selected at payment stage.
-            if is_virtual == 0:
-                _recompute_class(class_name, term_no)
-
-            if rid and old_class:
+                # If old was class-wide and moved/changed, recompute old side too
                 moved = (
                     old_class != class_name
                     or old_year != int(year_val)
-                    or (old_term_no != term_no)
-                    or (old_group != fee_group)
+                    or old_term_no != term_no
+                    or old_group != fee_group
+                    or old_is_virtual != is_virtual
                 )
-                if moved:
+
+                if moved and old_class and old_is_virtual == 0:
                     _recompute_class(old_class, old_term_no)
+
+            # ---------- CREATE NEW ----------
+            else:
+                target_classes = classes if class_name == "ALL" else [class_name]
+
+                saved_count = 0
+
+                for cls in target_classes:
+                    if not cls:
+                        continue
+
+                    # Manual upsert by class/name/year/term/group.
+                    # This avoids duplicate creation if item already exists.
+                    cur.execute("""
+                        SELECT id
+                        FROM requirements
+                        WHERE class_name=%s
+                          AND name=%s
+                          AND year=%s
+                          AND fee_group=%s
+                          AND (
+                               (term_no IS NULL AND %s IS NULL)
+                               OR (term_no = %s)
+                          )
+                        LIMIT 1
+                    """, (cls, name, year_val, fee_group, term_no, term_no))
+
+                    existing = cur.fetchone()
+
+                    if existing:
+                        cur.execute("""
+                            UPDATE requirements
+                               SET qty=%s,
+                                   amount=%s,
+                                   term=%s,
+                                   section=%s,
+                                   is_virtual=%s
+                             WHERE id=%s
+                        """, (
+                            qty,
+                            amount,
+                            term_label,
+                            section,
+                            is_virtual,
+                            existing["id"]
+                        ))
+                    else:
+                        cur.execute("""
+                            INSERT INTO requirements (
+                                class_name,
+                                name,
+                                qty,
+                                amount,
+                                term,
+                                year,
+                                fee_group,
+                                section,
+                                is_virtual
+                            )
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, (
+                            cls,
+                            name,
+                            qty,
+                            amount,
+                            term_label,
+                            year_val,
+                            fee_group,
+                            section,
+                            is_virtual
+                        ))
+
+                    saved_count += 1
+
+                    # Only class-wide items should affect expected requirements
+                    if is_virtual == 0:
+                        _recompute_class(cls, term_no)
+
+                conn.commit()
+
+                if class_name == "ALL":
+                    flash(f"Requirement saved for {saved_count} classes.", "success")
+                else:
+                    flash("Requirement saved.", "success")
 
         except mysql.connector.Error as e:
             conn.rollback()
@@ -18442,9 +18491,11 @@ def admin_requirements():
                 flash("Duplicate item for this class/term/year/group.", "danger")
             else:
                 flash(f"Failed to save: {e}", "danger")
+
         except Exception as e:
             conn.rollback()
             flash(f"Failed to save: {e}", "danger")
+
         finally:
             cur.close()
             conn.close()
@@ -18454,7 +18505,7 @@ def admin_requirements():
             year=year_val,
             term_no=(term_no or ""),
             fee_group=fee_group,
-            class_name=class_name
+            class_name=("" if class_name == "ALL" else class_name)
         ))
 
     # ---------- GET ----------
@@ -18492,7 +18543,7 @@ def admin_requirements():
 
     cur = conn.cursor(dictionary=True)
     cur.execute(f"""
-        SELECT 
+        SELECT
             id,
             class_name,
             name,
@@ -18509,11 +18560,6 @@ def admin_requirements():
          ORDER BY class_name, COALESCE(term,''), name
     """, params)
     rows = cur.fetchall() or []
-    cur.close()
-
-    cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT DISTINCT class_name FROM classes ORDER BY 1")
-    classes = [r["class_name"] for r in (cur.fetchall() or [])]
     cur.close()
 
     conn.close()
@@ -18571,6 +18617,7 @@ def admin_requirements_delete(rid):
         cur.execute("DELETE FROM requirements WHERE id=%s", (rid,))
         conn.commit()
 
+        # Only normal/class-wide items affect recomputation
         if cls and is_virtual == 0:
             _recompute_class(cls, tno)
 
@@ -18588,12 +18635,17 @@ def admin_requirements_delete(rid):
         conn.rollback()
         flash(f"Delete failed: {e}", "danger")
         return redirect(url_for("admin_requirements"))
+
     finally:
         try:
             cur.close()
         except Exception:
             pass
         conn.close()
+
+
+
+
 
 
 
