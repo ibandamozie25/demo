@@ -1,0 +1,41 @@
+/* Screen-only density: printed reports retain their original dimensions. */
+@media screen {
+ body.school-compact{background:#f4f7fb;color:#19334a;font-size:14px;line-height:1.4}
+ .school-compact>.school-workspace{width:100%;max-width:100%;padding:12px 18px;margin-top:0}
+ .school-workspace>.container,.school-workspace>.container-fluid{max-width:100%;padding:0;margin-top:0!important}
+ .school-compact .navbar{padding:6px 12px}
+ .school-compact .navbar-brand{font-size:16px}
+ .school-compact .navbar .nav-link{font-size:13px;padding:6px 9px}
+ .school-compact .dropdown-menu{max-height:75vh;overflow-y:auto;font-size:13px}
+ .school-workspace h1{font-size:1.6rem}.school-workspace h2{font-size:1.4rem}
+ .school-workspace h3{font-size:1.25rem}.school-workspace h4{font-size:1.1rem}.school-workspace h5{font-size:1rem}
+ .school-workspace .card{border-radius:8px}
+ .school-workspace .card-body,.school-workspace .card-header,.school-workspace .card-footer{padding:10px 12px}
+ .school-workspace .row{--bs-gutter-x:12px;--bs-gutter-y:8px}
+ .school-workspace .mb-4{margin-bottom:12px!important}
+ .school-workspace .mb-3{margin-bottom:9px!important}
+ .school-workspace .mt-4{margin-top:12px!important}
+ .school-workspace .mt-3{margin-top:9px!important}
+ .school-workspace .btn{font-size:13px;padding:5px 10px}
+ .school-workspace .btn-sm{font-size:12px;padding:3px 8px}
+ .school-workspace .form-control,.school-workspace .form-select{font-size:13px;min-height:33px;padding:5px 9px}
+ .school-workspace textarea.form-control{min-height:65px}
+ .school-workspace .form-label{font-size:12px;margin-bottom:3px}
+ .school-workspace .alert{padding:8px 12px;margin-bottom:9px}
+ .school-workspace .alert-dismissible{padding-right:40px}
+ .school-workspace .table{font-size:13px}
+ .school-workspace .table>:not(caption)>*>*{padding:6px 8px}
+ .school-workspace .school-table-scroll{overflow:auto;max-height:55vh;scrollbar-width:thin;position:relative}
+ .school-table-scroll thead{position:sticky;top:0;z-index:2;background:#edf3f8}
+ .school-table-scroll thead th{background:#edf3f8}
+ .school-workspace .btn-group{flex-wrap:wrap}
+ .school-compact footer{margin-top:12px;font-size:12px}
+}
+@media screen and (max-width:767px){
+ .school-compact>.school-workspace{padding:10px}
+ .school-workspace input.form-control,.school-workspace select.form-select,.school-workspace textarea.form-control{font-size:16px}
+}
+@media print{
+ .school-table-scroll{max-height:none!important;overflow:visible!important}
+ .school-table-scroll thead{position:static!important;display:table-header-group}
+}
